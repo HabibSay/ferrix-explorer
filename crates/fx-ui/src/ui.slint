@@ -1,0 +1,184 @@
+import { ListView } from "std-widgets.slint";
+import { Strings } from "resources/en-US.slint";
+
+// Represents a single file entry in the list.
+struct FileRow {
+    id: int,
+    display-name: string,
+    kind: string,      // "Folder" | "File" | "Symlink" | "Reparse Point"
+    size-text: string,
+    modified-text: string,
+    type-text: string,
+    selected: bool,
+    icon-key: int,
+}
+
+// Represents a column in the details header.
+struct ColumnSpec {
+    title: string,
+    width: length,
+    visible: bool,
+    sort-ascending: bool,
+    sort-active: bool,
+}
+
+// A single row in the file list.
+// Defined before FileList/ApplicationWindow so that it can be referenced.
+component FileListItem inherits Rectangle {
+    in property <FileRow> entry;
+    callback activated();
+    callback selected(bool, bool);  // ctrl, shift
+    callback context-menu(length, length);
+
+    height: 22px;
+    background: self.entry.selected ? #0078d7 : Colors.transparent;
+
+    accessible-role: list-item;
+    accessible-label: self.entry.display-name + ", " + self.entry.kind
+        + (self.entry.selected ? ", selected" : "");
+    accessible-action-default => { root.activated(); }
+
+    touch := TouchArea {
+        double-clicked => { root.activated(); }
+        clicked => { root.selected(false, false); }
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.right
+                    && event.kind == PointerEventKind.up) {
+                root.context-menu(self.mouse-x, self.mouse-y);
+            }
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 0px;
+        padding-left: 4px;
+        Text {
+            text: root.entry.display-name;
+            color: root.entry.selected ? #ffffff : #000000;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+// Virtualized list component.
+component FileList inherits Rectangle {
+    in property <[FileRow]> rows: [];
+    callback row-activated(int);
+    callback row-selected(int, bool, bool);
+    callback context-menu-requested(int, length, length);
+
+    accessible-role: list;
+
+    ListView {
+        for file-row[i] in rows: FileListItem {
+            entry: file-row;
+            activated => { root.row-activated(file-row.id); }
+            selected(ctrl, shift) => { root.row-selected(file-row.id, ctrl, shift); }
+            context-menu(x, y) => { root.context-menu-requested(file-row.id, x, y); }
+        }
+    }
+}
+
+export component ApplicationWindow inherits Window {
+    title: Strings.app-title;
+    min-width: 400px;
+    min-height: 300px;
+
+    // Properties exposed to the view model
+    in property <[FileRow]> rows: [];
+    in property <[ColumnSpec]> columns: [];
+    in property <string> current-path: "";
+    in property <string> filter-text: "";
+    in property <string> status-message: "";
+    in property <int> selected-count: 0;
+
+    // Callbacks toward orchestration
+    callback navigate-to(string);
+    callback row-activated(int);
+    callback row-selected(int, bool, bool);  // id, ctrl, shift
+    callback sort-by-column(int);
+    callback filter-changed(string);
+    callback address-bar-confirmed(string);
+    callback breadcrumb-segment-clicked(int);
+    callback context-menu-requested(int, length, length);
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // Address bar
+        Rectangle {
+            height: 30px;
+            background: white;
+            border-color: #cccccc;
+            border-width: 1px;
+
+            TextInput {
+                x: 4px;
+                y: 4px;
+                width: parent.width - 8px;
+                height: parent.height - 8px;
+                text: root.current-path;
+                accessible-role: text-input;
+                accessible-label: Strings.address-bar-label;
+                accepted => { root.address-bar-confirmed(self.text); }
+            }
+        }
+
+        // Breadcrumb (path display — segment clicks handled by host via index)
+        Rectangle {
+            height: 28px;
+            background: #e8e8e8;
+            accessible-role: none;
+            Text {
+                x: 4px;
+                text: root.current-path;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        // Column headers
+        Rectangle {
+            height: 28px;
+            background: #f0f0f0;
+            HorizontalLayout {
+                for col[i] in root.columns: TouchArea {
+                    width: col.width;
+                    clicked => { root.sort-by-column(i); }
+                    accessible-role: button;
+                    accessible-label: col.title;
+                    Text {
+                        text: col.title;
+                        vertical-alignment: center;
+                        horizontal-alignment: left;
+                        x: 4px;
+                    }
+                }
+            }
+        }
+
+        // Virtualized file list
+        FileList {
+            vertical-stretch: 1;
+            rows: root.rows;
+            row-activated(id) => { root.row-activated(id); }
+            row-selected(id, ctrl, shift) => { root.row-selected(id, ctrl, shift); }
+            context-menu-requested(id, x, y) => { root.context-menu-requested(id, x, y); }
+        }
+
+        // Status bar
+        Rectangle {
+            height: 22px;
+            background: #f8f8f8;
+            accessible-role: none;
+            accessible-label: root.status-message;
+            Text {
+                x: 4px;
+                text: root.status-message;
+                vertical-alignment: center;
+                horizontal-alignment: left;
+            }
+        }
+    }
+}
