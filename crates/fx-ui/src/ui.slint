@@ -9,6 +9,7 @@ struct FileRow {
     size-text: string,
     modified-text: string,
     type-text: string,
+    attributes-text: string,
     selected: bool,
     icon-key: int,
 }
@@ -23,7 +24,6 @@ struct ColumnSpec {
 }
 
 // A single row in the file list.
-// Defined before FileList/ApplicationWindow so that it can be referenced.
 component FileListItem inherits Rectangle {
     in property <FileRow> entry;
     callback activated();
@@ -80,6 +80,68 @@ component FileList inherits Rectangle {
     }
 }
 
+// Details table with fixed column headers.
+// Rows are rendered by FileList; this component owns only the header row.
+component DetailsTable inherits VerticalLayout {
+    in property <[ColumnSpec]> columns: [];
+    callback sort-by-column(int);
+
+    // Column header row
+    Rectangle {
+        height: 28px;
+        background: #f0f0f0;
+        HorizontalLayout {
+            for col[i] in root.columns: TouchArea {
+                width: col.width;
+                clicked => { root.sort-by-column(i); }
+                accessible-role: button;
+                // Include sort direction in accessible-label so screen readers
+                // announce "Name, sorted ascending" etc.
+                accessible-label: col.sort-active
+                    ? (col.title + (col.sort-ascending ? ", sorted ascending" : ", sorted descending"))
+                    : col.title;
+                Text {
+                    text: col.sort-active
+                        ? (col.title + (col.sort-ascending ? " ▲" : " ▼"))
+                        : col.title;
+                    vertical-alignment: center;
+                    horizontal-alignment: left;
+                    x: 4px;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}
+
+// Subfolder menu stub — a basic popup list placeholder.
+// Populated and shown by the host in Slice 3; exists now so imports compile.
+component SubfolderMenu inherits Rectangle {
+    in property <bool> visible-menu: false;
+    in property <[string]> items: [];
+    callback item-activated(int);
+
+    visible: self.visible-menu;
+    background: #ffffff;
+    border-color: #aaaaaa;
+    border-width: 1px;
+    width: 200px;
+
+    ListView {
+        for label[i] in root.items: TouchArea {
+            height: 22px;
+            clicked => { root.item-activated(i); }
+            accessible-role: list-item;
+            accessible-label: label;
+            Text {
+                text: label;
+                x: 4px;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
 export component ApplicationWindow inherits Window {
     title: Strings.app-title;
     min-width: 400px;
@@ -92,6 +154,9 @@ export component ApplicationWindow inherits Window {
     in property <string> filter-text: "";
     in property <string> status-message: "";
     in property <int> selected-count: 0;
+    // Subfolder menu state (toggled by host)
+    in property <bool> subfolder-menu-visible: false;
+    in property <[string]> subfolder-items: [];
 
     // Callbacks toward orchestration
     callback navigate-to(string);
@@ -102,6 +167,7 @@ export component ApplicationWindow inherits Window {
     callback address-bar-confirmed(string);
     callback breadcrumb-segment-clicked(int);
     callback context-menu-requested(int, length, length);
+    callback subfolder-item-activated(int);
 
     VerticalLayout {
         spacing: 0px;
@@ -130,6 +196,7 @@ export component ApplicationWindow inherits Window {
             height: 28px;
             background: #e8e8e8;
             accessible-role: none;
+            accessible-label: Strings.breadcrumb-label;
             Text {
                 x: 4px;
                 text: root.current-path;
@@ -138,24 +205,10 @@ export component ApplicationWindow inherits Window {
             }
         }
 
-        // Column headers
-        Rectangle {
-            height: 28px;
-            background: #f0f0f0;
-            HorizontalLayout {
-                for col[i] in root.columns: TouchArea {
-                    width: col.width;
-                    clicked => { root.sort-by-column(i); }
-                    accessible-role: button;
-                    accessible-label: col.title;
-                    Text {
-                        text: col.title;
-                        vertical-alignment: center;
-                        horizontal-alignment: left;
-                        x: 4px;
-                    }
-                }
-            }
+        // Column headers via DetailsTable
+        DetailsTable {
+            columns: root.columns;
+            sort-by-column(i) => { root.sort-by-column(i); }
         }
 
         // Virtualized file list
@@ -167,7 +220,7 @@ export component ApplicationWindow inherits Window {
             context-menu-requested(id, x, y) => { root.context-menu-requested(id, x, y); }
         }
 
-        // Status bar
+        // Status bar — accessible-role: none so the live region is the text itself
         Rectangle {
             height: 22px;
             background: #f8f8f8;
@@ -180,5 +233,14 @@ export component ApplicationWindow inherits Window {
                 horizontal-alignment: left;
             }
         }
+    }
+
+    // Subfolder dropdown overlay (hidden until host activates it)
+    SubfolderMenu {
+        x: 0px;
+        y: 58px;  // below address bar + breadcrumb
+        visible-menu: root.subfolder-menu-visible;
+        items: root.subfolder-items;
+        item-activated(i) => { root.subfolder-item-activated(i); }
     }
 }

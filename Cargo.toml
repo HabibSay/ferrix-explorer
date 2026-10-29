@@ -1,0 +1,53 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/*",
+    "prototypes/slint",
+    "prototypes/iced",
+]
+default-members = ["crates/fx-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+authors = ["Ferrix Explorer contributors"]
+
+[workspace.dependencies]
+windows = { version = "=0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_SystemServices",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_Shell",
+] }
+windows-core = "=0.62.2"
+windows-implement = "=0.60.2"
+slint = { version = "=1.18.1", features = ["raw-window-handle-06"] }
+raw-window-handle = { version = "=0.6.2" }
+slint-build = "=1.18.1"
+iced = "=0.14.0"
+tracing = "=0.1.44"
+tracing-appender = "=0.2.5"
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["fmt", "env-filter"] }
+directories = "=6.0.0"
+jwalk = { version = "=0.9.0" }
+notify = { version = "=8.2.1" }
+tokio = { version = "=1.54.1", default-features = false, features = ["rt-multi-thread"] }
+tokio-util = { version = "=0.7.20", default-features = false, features = ["rt"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
