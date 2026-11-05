@@ -6,7 +6,7 @@
 use fx_domain::{
     entry::{EntryKind, FileEntry},
     filter::{FilterQuery, VisibilityRules},
-    view::{Column, ColumnLayout, SortDirection, SortKey},
+    view::{Column, ColumnLayout, SortDirection, SortKey, ViewMode},
 };
 use std::collections::HashSet;
 
@@ -38,6 +38,8 @@ pub struct FileListViewModel {
     selected_ids: HashSet<u64>,
     /// Mise en page des colonnes.
     column_layout: ColumnLayout,
+    /// Mode d'affichage actif (List ou Details).
+    _view_mode: ViewMode,
 }
 
 impl FileListViewModel {
@@ -50,6 +52,7 @@ impl FileListViewModel {
             sort_key: SortKey::default(),
             selected_ids: HashSet::new(),
             column_layout: ColumnLayout::default(),
+            _view_mode: ViewMode::default(),
         }
     }
 
@@ -156,6 +159,34 @@ impl FileListViewModel {
 
     pub fn column_layout(&self) -> &ColumnLayout {
         &self.column_layout
+    }
+
+    /// Return the filesystem path for `entry_id`, if it is in the current listing.
+    pub fn entry_path(&self, id: u64) -> Option<std::path::PathBuf> {
+        self.all_entries
+            .iter()
+            .find(|e| e.id.0 == id)
+            .map(|e| e.path.clone())
+    }
+
+    /// Return the kind string for `entry_id`.
+    pub fn entry_kind_str(&self, id: u64) -> Option<&'static str> {
+        self.all_entries
+            .iter()
+            .find(|e| e.id.0 == id)
+            .map(|e| format_kind(&e.kind))
+    }
+
+    /// Update the active view mode (List or Details). No rebuild needed.
+    pub fn set_view_mode(&mut self, _mode: fx_domain::view::ViewMode) {
+        // ViewMode is consumed by the orchestrator for column layout decisions;
+        // the view model stores it for round-trip persistence.
+        self._view_mode = _mode;
+    }
+
+    /// Return the active view mode.
+    pub fn view_mode(&self) -> fx_domain::view::ViewMode {
+        self._view_mode
     }
 }
 

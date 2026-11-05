@@ -91,3 +91,21 @@ pub const SELECTED_COUNT_FMT: &str = "selected";
 
 /// Prefix for folder-change announcement.
 pub const FOLDER_CHANGE_FMT: &str = "Navigated to";
+
+/// Placeholder shown in address bar autocomplete.
+pub const AUTOCOMPLETE_PLACEHOLDER: &str = "Type a path…";
+
+/// Label for the subfolder menu.
+pub const SUBFOLDER_MENU_LABEL: &str = "Subfolders";
+
+/// Tooltip for the back navigation button.
+pub const BACK_BUTTON_LABEL: &str = "Back (Alt+Left)";
+
+/// Tooltip for the forward navigation button.
+pub const FORWARD_BUTTON_LABEL: &str = "Forward (Alt+Right)";
+
+/// Tooltip for the up navigation button.
+pub const UP_BUTTON_LABEL: &str = "Up (Alt+Up)";
+
+/// Tooltip for the refresh button.
+pub const REFRESH_BUTTON_LABEL: &str = "Refresh (F5)";

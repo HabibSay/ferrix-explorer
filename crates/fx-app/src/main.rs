@@ -10,10 +10,12 @@ mod strings;
 
 mod orchestration;
 
+use fx_domain::location::Location;
 use fx_settings::{WindowSize, load_window_size, save_window_size};
 use fx_shell::OleDropRegistration;
 use fx_ui::ApplicationWindow;
-use slint::ComponentHandle;
+use orchestration::Orchestrator;
+use slint::{ComponentHandle, Model};
 use tracing_appender::{
     non_blocking::WorkerGuard,
     rolling::{RollingFileAppender, Rotation},
@@ -63,6 +65,82 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Register OLE + drop target on the Slint window's HWND.
     let mut drop_reg = OleDropRegistration::register(hwnd)?;
+
+    // Determine initial location: user's home directory, falling back to C:\.
+    let initial_location = {
+        let home = directories::BaseDirs::new()
+            .map(|b| b.home_dir().to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\"));
+        Location::Local(home)
+    };
+
+    // Create the orchestrator and wire all window callbacks.
+    let orchestrator = Orchestrator::new(window.as_weak(), initial_location);
+    {
+        let win = &window;
+
+        // Address bar confirmed (Enter or completion selected).
+        let orch = std::sync::Arc::new(std::sync::Mutex::new(orchestrator));
+
+        let orch_back = orch.clone();
+        win.on_navigate_back(move || {
+            orch_back.lock().unwrap().navigate_back();
+        });
+
+        let orch_fwd = orch.clone();
+        win.on_navigate_forward(move || {
+            orch_fwd.lock().unwrap().navigate_forward();
+        });
+
+        let orch_up = orch.clone();
+        win.on_navigate_up(move || {
+            orch_up.lock().unwrap().navigate_up();
+        });
+
+        let orch_refresh = orch.clone();
+        win.on_navigate_refresh(move || {
+            orch_refresh.lock().unwrap().refresh();
+        });
+
+        let orch_addr = orch.clone();
+        win.on_address_bar_confirmed(move |text| {
+            orch_addr.lock().unwrap().navigate_to_path(&text);
+        });
+
+        let orch_act = orch.clone();
+        win.on_row_activated(move |id| {
+            orch_act.lock().unwrap().on_row_activated(id as u64);
+        });
+
+        // Breadcrumb segment click: navigate to the partial path formed by segments 0..=i.
+        let win_weak_bc = window.as_weak();
+        let orch_bc = orch.clone();
+        win.on_breadcrumb_segment_clicked(move |idx| {
+            if let Some(win) = win_weak_bc.upgrade() {
+                let segments = win.get_breadcrumb_segments();
+                let count = (idx + 1).min(segments.row_count() as i32) as usize;
+                let mut path = std::path::PathBuf::new();
+                for i in 0..count {
+                    let seg = segments.row_data(i).unwrap_or_default();
+                    path.push(seg.as_str());
+                }
+                orch_bc.lock().unwrap().navigate_to(Location::Local(path));
+            }
+        });
+
+        // Subfolder item selected: navigate to the path.
+        let orch_sub = orch.clone();
+        win.on_subfolder_item_selected(move |item| {
+            orch_sub.lock().unwrap().navigate_to_path(&item);
+        });
+
+        // Row selection (single, ctrl, shift) — full multi-select is Slice 4.
+        let _orch_sel = orch.clone();
+        win.on_row_selected(move |_id, _ctrl, _shift| {});
+
+        // focus-address-bar callback: handled in Slint (calls focus-input() directly).
+        win.on_focus_address_bar(|| {});
+    }
 
     // Persist window size when the user closes the window.
     let window_weak = window.as_weak();

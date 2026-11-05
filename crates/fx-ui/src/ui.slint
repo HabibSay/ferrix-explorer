@@ -23,6 +23,8 @@ struct ColumnSpec {
     sort-active: bool,
 }
 
+// ── FileListItem ──────────────────────────────────────────────────────────────
+
 // A single row in the file list.
 component FileListItem inherits Rectangle {
     in property <FileRow> entry;
@@ -61,6 +63,8 @@ component FileListItem inherits Rectangle {
     }
 }
 
+// ── FileList ──────────────────────────────────────────────────────────────────
+
 // Virtualized list component.
 component FileList inherits Rectangle {
     in property <[FileRow]> rows: [];
@@ -80,6 +84,8 @@ component FileList inherits Rectangle {
     }
 }
 
+// ── DetailsTable ──────────────────────────────────────────────────────────────
+
 // Details table with fixed column headers.
 // Rows are rendered by FileList; this component owns only the header row.
 component DetailsTable inherits VerticalLayout {
@@ -95,8 +101,6 @@ component DetailsTable inherits VerticalLayout {
                 width: col.width;
                 clicked => { root.sort-by-column(i); }
                 accessible-role: button;
-                // Include sort direction in accessible-label so screen readers
-                // announce "Name, sorted ascending" etc.
                 accessible-label: col.sort-active
                     ? (col.title + (col.sort-ascending ? ", sorted ascending" : ", sorted descending"))
                     : col.title;
@@ -114,133 +118,322 @@ component DetailsTable inherits VerticalLayout {
     }
 }
 
-// Subfolder menu stub — a basic popup list placeholder.
-// Populated and shown by the host in Slice 3; exists now so imports compile.
+// ── AddressBar ────────────────────────────────────────────────────────────────
+
+// Editable address bar with autocomplete dropdown.
+component AddressBar inherits Rectangle {
+    in property <string> current-path: "";
+    in property <[string]> completions: [];
+    callback confirmed(string);
+
+    // Let the parent focus the inner TextInput.
+    public function focus-input() {
+        addr-input.focus();
+    }
+
+    height: 30px;
+    background: white;
+    border-color: #cccccc;
+    border-width: 1px;
+
+    addr-input := TextInput {
+        x: 4px;
+        y: 4px;
+        width: parent.width - 8px;
+        height: parent.height - 8px;
+        text: root.current-path;
+        accessible-role: text-input;
+        accessible-label: Strings.address-bar-label;
+        accepted => { root.confirmed(self.text); }
+    }
+
+    // Autocomplete dropdown — shown when there are completions.
+    if root.completions.length > 0: Rectangle {
+        y: root.height;
+        x: 0px;
+        width: root.width;
+        height: min(root.completions.length * 22px, 132px);
+        background: #ffffff;
+        border-color: #aaaaaa;
+        border-width: 1px;
+
+        accessible-role: list;
+        accessible-label: Strings.autocomplete-placeholder;
+
+        ListView {
+            for item[_i] in root.completions: TouchArea {
+                height: 22px;
+                clicked => { root.confirmed(item); }
+                accessible-role: list-item;
+                accessible-label: item;
+                Text {
+                    text: item;
+                    x: 4px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}
+
+// ── SubfolderMenu ─────────────────────────────────────────────────────────────
+
+// Popup subfolder list attached to a breadcrumb segment.
 component SubfolderMenu inherits Rectangle {
+    in property <[string]> subfolder-items: [];
     in property <bool> visible-menu: false;
-    in property <[string]> items: [];
-    callback item-activated(int);
+    callback item-selected(string);
+    callback close-requested();
 
     visible: self.visible-menu;
     background: #ffffff;
     border-color: #aaaaaa;
     border-width: 1px;
-    width: 200px;
+    width: 220px;
+    height: min(self.subfolder-items.length * 22px + 4px, 200px);
 
-    ListView {
-        for label[i] in root.items: TouchArea {
-            height: 22px;
-            clicked => { root.item-activated(i); }
-            accessible-role: list-item;
-            accessible-label: label;
-            Text {
-                text: label;
-                x: 4px;
-                vertical-alignment: center;
+    accessible-role: list;
+    accessible-label: Strings.subfolder-menu-label;
+
+    FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.close-requested();
+                return accept;
+            }
+            reject
+        }
+
+        ListView {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+
+            for label[_i] in root.subfolder-items: TouchArea {
+                height: 22px;
+                clicked => { root.item-selected(label); }
+                accessible-role: list-item;
+                accessible-label: label;
+                Text {
+                    text: label;
+                    x: 4px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
             }
         }
     }
 }
+
+// ── Breadcrumb ────────────────────────────────────────────────────────────────
+
+// Clickable breadcrumb with per-segment subfolder menus.
+// Uses in-out for subfolder-menu-visible so the arrow click can toggle it locally.
+component Breadcrumb inherits Rectangle {
+    in property <[string]> segments: [];
+    in property <[string]> subfolder-items: [];
+    in-out property <bool> subfolder-menu-visible: false;
+    in-out property <int> active-segment-index: -1;
+
+    callback segment-clicked(int);
+    callback subfolder-item-selected(string);
+
+    height: 28px;
+    background: #e8e8e8;
+    accessible-role: none;
+    accessible-label: Strings.breadcrumb-label;
+
+    HorizontalLayout {
+        alignment: start;
+        spacing: 0px;
+        padding-left: 4px;
+        padding-right: 4px;
+
+        for seg[i] in root.segments: HorizontalLayout {
+            spacing: 0px;
+
+            // Segment touch area
+            seg-touch := TouchArea {
+                width: seg-label.preferred-width + 8px;
+                height: 28px;
+                clicked => { root.segment-clicked(i); }
+                accessible-role: button;
+                accessible-label: seg;
+
+                seg-label := Text {
+                    x: 4px;
+                    text: seg;
+                    vertical-alignment: center;
+                    color: #0060c0;
+                    overflow: elide;
+                }
+            }
+
+            // Arrow button to open subfolder menu for this segment.
+            arrow-touch := TouchArea {
+                width: 16px;
+                height: 28px;
+                clicked => {
+                    root.active-segment-index = i;
+                    root.subfolder-menu-visible = true;
+                }
+                accessible-role: button;
+                accessible-label: Strings.subfolder-menu-label;
+
+                Text {
+                    text: "▾";
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                    color: #666666;
+                }
+            }
+
+            // Chevron separator — not shown after the last segment.
+            if i < root.segments.length - 1: Text {
+                text: " > ";
+                vertical-alignment: center;
+                color: #888888;
+            }
+        }
+    }
+
+    // Subfolder popup — rendered as overlay when a segment's arrow was clicked.
+    if root.subfolder-menu-visible && root.active-segment-index >= 0: SubfolderMenu {
+        x: 4px;
+        y: 28px;
+        subfolder-items: root.subfolder-items;
+        visible-menu: root.subfolder-menu-visible;
+        item-selected(label) => {
+            root.subfolder-menu-visible = false;
+            root.subfolder-item-selected(label);
+        }
+        close-requested => {
+            root.subfolder-menu-visible = false;
+        }
+    }
+}
+
+// ── ApplicationWindow ─────────────────────────────────────────────────────────
 
 export component ApplicationWindow inherits Window {
     title: Strings.app-title;
     min-width: 400px;
     min-height: 300px;
 
-    // Properties exposed to the view model
+    // ── Properties ──────────────────────────────────────────────────────────
     in property <[FileRow]> rows: [];
     in property <[ColumnSpec]> columns: [];
     in property <string> current-path: "";
     in property <string> filter-text: "";
     in property <string> status-message: "";
     in property <int> selected-count: 0;
-    // Subfolder menu state (toggled by host)
-    in property <bool> subfolder-menu-visible: false;
-    in property <[string]> subfolder-items: [];
 
-    // Callbacks toward orchestration
+    // Navigation
+    in property <[string]> address-completions: [];
+    in property <[string]> breadcrumb-segments: [];
+    in property <[string]> subfolder-items: [];
+    in-out property <bool> subfolder-menu-visible: false;
+
+    // ── Callbacks ────────────────────────────────────────────────────────────
     callback navigate-to(string);
     callback row-activated(int);
-    callback row-selected(int, bool, bool);  // id, ctrl, shift
+    callback row-selected(int, bool, bool);
     callback sort-by-column(int);
     callback filter-changed(string);
     callback address-bar-confirmed(string);
     callback breadcrumb-segment-clicked(int);
+    callback subfolder-item-selected(string);
     callback context-menu-requested(int, length, length);
-    callback subfolder-item-activated(int);
+    // History navigation
+    callback navigate-back();
+    callback navigate-forward();
+    callback navigate-up();
+    callback navigate-refresh();
+    // Focus address bar (called from keyboard handler below or from orchestration)
+    callback focus-address-bar();
 
-    VerticalLayout {
-        spacing: 0px;
+    // ── Global keyboard handler ──────────────────────────────────────────────
+    FocusScope {
+        key-pressed(event) => {
+            if (event.modifiers.alt && event.text == Key.LeftArrow) {
+                root.navigate-back();
+                return accept;
+            }
+            if (event.modifiers.alt && event.text == Key.RightArrow) {
+                root.navigate-forward();
+                return accept;
+            }
+            if (event.modifiers.alt && event.text == Key.UpArrow) {
+                root.navigate-up();
+                return accept;
+            }
+            // F5 key — Slint maps it to "\u{F705}" in event.text.
+            if (event.text == "\u{F705}") {
+                root.navigate-refresh();
+                return accept;
+            }
+            if (event.modifiers.control && event.text == "l") {
+                addr-bar.focus-input();
+                root.focus-address-bar();
+                return accept;
+            }
+            if (event.modifiers.alt && event.text == "d") {
+                addr-bar.focus-input();
+                root.focus-address-bar();
+                return accept;
+            }
+            reject
+        }
 
-        // Address bar
-        Rectangle {
-            height: 30px;
-            background: white;
-            border-color: #cccccc;
-            border-width: 1px;
+        VerticalLayout {
+            spacing: 0px;
 
-            TextInput {
-                x: 4px;
-                y: 4px;
-                width: parent.width - 8px;
-                height: parent.height - 8px;
-                text: root.current-path;
-                accessible-role: text-input;
-                accessible-label: Strings.address-bar-label;
-                accepted => { root.address-bar-confirmed(self.text); }
+            // Address bar with autocomplete
+            addr-bar := AddressBar {
+                current-path: root.current-path;
+                completions: root.address-completions;
+                confirmed(text) => { root.address-bar-confirmed(text); }
+            }
+
+            // Breadcrumb
+            bc := Breadcrumb {
+                segments: root.breadcrumb-segments;
+                subfolder-items: root.subfolder-items;
+                subfolder-menu-visible <=> root.subfolder-menu-visible;
+                segment-clicked(i) => { root.breadcrumb-segment-clicked(i); }
+                subfolder-item-selected(label) => { root.subfolder-item-selected(label); }
+            }
+
+            // Column headers
+            DetailsTable {
+                columns: root.columns;
+                sort-by-column(i) => { root.sort-by-column(i); }
+            }
+
+            // Virtualized file list
+            FileList {
+                vertical-stretch: 1;
+                rows: root.rows;
+                row-activated(id) => { root.row-activated(id); }
+                row-selected(id, ctrl, shift) => { root.row-selected(id, ctrl, shift); }
+                context-menu-requested(id, x, y) => { root.context-menu-requested(id, x, y); }
+            }
+
+            // Status bar
+            Rectangle {
+                height: 22px;
+                background: #f8f8f8;
+                accessible-role: none;
+                accessible-label: root.status-message;
+                Text {
+                    x: 4px;
+                    text: root.status-message;
+                    vertical-alignment: center;
+                    horizontal-alignment: left;
+                }
             }
         }
-
-        // Breadcrumb (path display — segment clicks handled by host via index)
-        Rectangle {
-            height: 28px;
-            background: #e8e8e8;
-            accessible-role: none;
-            accessible-label: Strings.breadcrumb-label;
-            Text {
-                x: 4px;
-                text: root.current-path;
-                vertical-alignment: center;
-                overflow: elide;
-            }
-        }
-
-        // Column headers via DetailsTable
-        DetailsTable {
-            columns: root.columns;
-            sort-by-column(i) => { root.sort-by-column(i); }
-        }
-
-        // Virtualized file list
-        FileList {
-            vertical-stretch: 1;
-            rows: root.rows;
-            row-activated(id) => { root.row-activated(id); }
-            row-selected(id, ctrl, shift) => { root.row-selected(id, ctrl, shift); }
-            context-menu-requested(id, x, y) => { root.context-menu-requested(id, x, y); }
-        }
-
-        // Status bar — accessible-role: none so the live region is the text itself
-        Rectangle {
-            height: 22px;
-            background: #f8f8f8;
-            accessible-role: none;
-            accessible-label: root.status-message;
-            Text {
-                x: 4px;
-                text: root.status-message;
-                vertical-alignment: center;
-                horizontal-alignment: left;
-            }
-        }
-    }
-
-    // Subfolder dropdown overlay (hidden until host activates it)
-    SubfolderMenu {
-        x: 0px;
-        y: 58px;  // below address bar + breadcrumb
-        visible-menu: root.subfolder-menu-visible;
-        items: root.subfolder-items;
-        item-activated(i) => { root.subfolder-item-activated(i); }
     }
 }
