@@ -1,0 +1,1024 @@
+# PRD — Ferrix Explorer
+
+> Explorateur de fichiers open-source, natif Windows 10/11, écrit en Rust.
+
+| Champ | Valeur |
+|---|---|
+| Nom de code | Ferrix Explorer (provisoire, à valider) |
+| Version du document | 2.0 |
+| Statut | Draft — à valider avant Tranche 0 |
+| Licence cible | MIT OU Apache-2.0 (sous réserve de la décision UI, section 6.1) |
+| Plateformes | Windows 10 (22H2+) et Windows 11 |
+| Langue du projet | Français (documentation), anglais (code, commentaires techniques) |
+
+---
+
+## 1. Vision
+
+Un explorateur de fichiers Windows 100 % Rust, open-source, qui atteint la parité fonctionnelle avec l'Explorateur Windows, l'enrichit de fonctionnalités de power-user (aperçu instantané façon Quick Look, palette de commandes, terminal intégré, recherche instantanée façon Everything) et reste nettement plus réactif sur les dossiers volumineux.
+
+L'ambition est formulée en **objectifs mesurables** (section 3.2) plutôt qu'en multiplicateur marketing : chaque gain de performance annoncé doit être prouvé par un benchmark reproductible face à `explorer.exe`.
+
+---
+
+## 2. Problème adressé
+
+**Explorer Windows aujourd'hui :**
+- Latence visible sur dossiers volumineux (dizaines de milliers d'entrées) et sur les partages réseau.
+- Recherche intégrée lente, dépendante de l'indexeur Windows Search.
+- Pas d'aperçu rapide natif (équivalent de Quick Look sur macOS).
+- Extensibilité limitée, UI évoluant lentement, code source fermé.
+
+**Alternatives existantes et leurs limites :**
+- Total Commander : payant, interface datée.
+- Files (C#/WinUI, MIT) : bonne référence fonctionnelle, mais pas en Rust et performances variables.
+- Double Commander : multiplateforme, look non natif Windows 11.
+- Everything : excellent pour la recherche, mais ce n'est pas un explorateur complet.
+
+**Opportunité :** un explorateur natif Windows 11 (Mica, Snap Layouts), rapide, open-source, avec les fonctions power-user réunies dans une seule application.
+
+---
+
+## 3. Objectifs
+
+### 3.1 Objectifs produit
+
+- Navigation fluide : listes virtualisées, zéro lag sur dossiers massifs.
+- Menu contextuel **natif Windows** complet, y compris entrées des applications tierces (7-Zip, Git, antivirus).
+- Recherche globale instantanée via lecture de l'USN Journal / MFT NTFS.
+- Multi-onglets, multi-fenêtres, split view et mode dual-pane façon Total Commander.
+- Quick Look : aperçu instantané de la plupart des formats courants.
+- Sidebar complète : épinglés, accès rapide, récents, bibliothèques, lecteurs, réseau, comptes cloud.
+- Intégration cloud (OneDrive, Google Drive, Dropbox) via les APIs de synchronisation Windows lorsque disponibles.
+- Palette de commandes, terminal intégré, CLI compagnon, support WSL.
+- Accessibilité complète dès le départ (UI Automation, navigation clavier intégrale, contraste élevé).
+- Architecture extensible par plugins sandboxés (WASM) en v2.
+
+### 3.2 Objectifs de performance (mesurables)
+
+Toutes les mesures se font sur une machine de référence définie dans `docs/benchmarks/REFERENCE.md` (à créer en Tranche 0), avec comparaison systématique à `explorer.exe` dans les mêmes conditions.
+
+| Métrique | Cible v1.0 | Cible stretch |
+|---|---|---|
+| Démarrage à froid (fenêtre affichée et interactive) | < 300 ms | < 200 ms |
+| Première vue d'un dossier de 50 000 entrées (premiers items affichés) | < 100 ms | < 50 ms |
+| Scroll sur 50 000 entrées | 60 FPS constant | 120 FPS sur écran compatible |
+| Navigation vers un dossier déjà visité (cache chaud) | < 50 ms | < 20 ms |
+| Recherche par nom sur index de 1 M de fichiers (p95) | < 50 ms | < 20 ms |
+| Indexation initiale de 1 M de fichiers (NTFS, USN/MFT) | < 60 s | < 30 s |
+| Mémoire au repos, 1 onglet, dossier vide | < 120 Mo | < 80 Mo |
+| Taille de l'installeur sans moteurs optionnels | < 30 Mo | < 20 Mo |
+| Ouverture de l'aperçu Quick Look (image standard) | < 100 ms | < 50 ms |
+
+### 3.3 Non-objectifs (v1.0)
+
+- Remplacement du process `explorer.exe` (le shell Windows reste intact ; Ferrix est une application standalone, avec option « explorateur par défaut » en v1.5).
+- Support Linux/macOS livré. L'architecture reste modulaire pour un portage futur, mais aucun travail de portage n'est prévu avant la 1.0.
+- Recherche sémantique ou IA. **Hors scope, définitivement.**
+- Éditeur de texte ou suite bureautique. On s'appuie sur les applications existantes et sur Quick Look.
+- Client de synchronisation cloud propriétaire. On s'intègre aux clients officiels (OneDrive, Google Drive, Dropbox) et on ne réimplémente pas la synchronisation.
+- Antivirus ou outil de sécurité. On s'appuie sur le scan natif via le Shell.
+
+---
+
+## 4. Personas
+
+| Persona | Besoins principaux | Fonctionnalités clés |
+|---|---|---|
+| **Développeur** | Terminal, Git, WSL, chemins longs, navigation clavier | Palette de commandes, terminal ConPTY, badges Git, support WSL, CLI `fx` |
+| **Power user / archiviste** | Traitements en masse, comparaison, intégrité | Dual-pane, renommage par lot regex, checksums, détecteur de doublons, file d'attente |
+| **Utilisateur grand public** | Simplicité, look moderne, aperçu rapide | Thèmes, Mica, Quick Look, navigation souris |
+| **Utilisateur de lecteur d'écran** | Accès complet sans souris ni vision | UI Automation, annonces cohérentes, navigation clavier intégrale |
+| **Administrateur / support** | Déploiement, diagnostic, usage sans installation | Mode portable, logs `tracing`, CLI, export de configuration |
+
+---
+
+## 5. Stack technique
+
+| Composant | Choix | Licence | Notes |
+|---|---|---|---|
+| Langage | Rust (edition 2024 si stable à la Tranche 0, sinon 2021) | — | MSRV fixée dans `rust-toolchain.toml` |
+| UI | Slint (plan B : iced, ou Win32 + Direct2D) | GPLv3 / Royalty-Free / commerciale | **Décision bloquante, voir section 6.1** |
+| Interop Windows | `windows-rs` (IShellFolder, IContextMenu, IFileOperation, CfApi, ConPTY, UIA, DirectWrite, Media Foundation) | MIT/Apache-2.0 | API officielle Microsoft |
+| Parcours FS | `jwalk` + `rayon` | MIT / MIT-Apache | Parcours parallèle |
+| Surveillance FS | `notify` | Permissive | Événements de dossiers ouverts |
+| Index et recherche | `tantivy` + lecture USN Journal / MFT | MIT | Recherche façon Everything |
+| Base locale | `rusqlite` (SQLite embarqué) | MIT | Métadonnées, récents, tags, config |
+| Async | `tokio` | MIT | I/O réseau, cloud, orchestration |
+| Cloud | `reqwest`, `oauth2`, Microsoft Graph, Google Drive API v3, Dropbox API | MIT/Apache-2.0 | OAuth2 via navigateur système |
+| Compression (défaut) | `libdeflater`, `zstd`, `sevenz-rust` | MIT / BSD / Apache-2.0 | Voir section 8 |
+| Compression (RAR, lecture) | `unrar` via `unrar.dll` | **Restrictive** | Optionnel, désactivable, voir 6.3 |
+| Images | `zune-image`, `fast_image_resize` | MIT/Apache-2.0 | Décodage et redimensionnement SIMD |
+| RAW | `rawloader` ou successeur maintenu | MIT/Apache-2.0 | À confirmer à la Tranche 8 (maintenance) |
+| PDF | `pdfium-render` (moteur Pdfium) | BSD / MIT-Apache | **Pas de MuPDF** (AGPL) |
+| Audio | `symphonia` | MPL-2.0 | Waveform, métadonnées |
+| Vidéo | Windows Media Foundation (natif) | Système | `ffmpeg` en option (plugin) |
+| Coloration syntaxique | `tree-sitter` (fallback `syntect`) | MIT | Incrémental |
+| Polices | DirectWrite (natif) | Système | Aperçu de polices |
+| Terminal | ConPTY via `windows-rs` | MIT/Apache-2.0 | Terminal intégré |
+| Config | `serde` + TOML | MIT/Apache-2.0 | Fichiers utilisateur |
+| Logs | `tracing` + `tracing-subscriber` | MIT | Diagnostic |
+| Plugins (v2) | `wasmtime` | Apache-2.0 avec exception LLVM | Sandbox WASM |
+| Packaging | `cargo-wix` (MSI) et MSIX | MIT | Installeur et Store-ready |
+| CI/CD | GitHub Actions (`windows-latest`) | — | Build, tests, lint, release |
+
+---
+
+## 6. Décisions ouvertes et points légaux
+
+### 6.1 Licence de l'UI (décision bloquante avant Tranche 0)
+
+Slint est disponible sous GPLv3, sous licence Royalty-Free (avec obligation d'affichage d'un badge « Made with Slint » et qui n'est pas une licence OSI), ou sous licence commerciale. Une licence MIT/Apache-2.0 pour Ferrix est incompatible avec une dépendance GPLv3 distribuée dans le binaire.
+
+**Options :**
+1. Licence du projet en **GPLv3** (simple, OSI, compatible Slint GPL). Renonce à la double licence MIT/Apache.
+2. Garder **Slint Royalty-Free** et accepter le badge et une licence non OSI pour la partie UI.
+3. Passer à **iced** (MIT) ou à **Win32 + Direct2D** (contrôle total, développement plus long).
+
+**Recommandation :** évaluer iced pendant la Tranche 0 (prototype de la fenêtre principale et de la liste virtualisée) avant de trancher. Documenter la décision dans `docs/adr/0001-ui-framework.md`.
+
+### 6.2 LZTurbo (powturbo)
+
+LZTurbo est un compresseur très rapide, mais sa licence n'est pas OSI (usage gratuit non commercial, source non libre). Il ne sera donc **jamais inclus dans le build distribué par défaut**. Il est proposé comme **backend optionnel** que l'utilisateur installe lui-même et active explicitement, avec un avertissement affiché dans les paramètres. Voir section 8.
+
+Cette logique « défaut OSS + moteur tiers opt-in » s'applique à tout composant non permissif (MuPDF, ffmpeg en build complet, etc.).
+
+### 6.3 UnRAR
+
+La licence de UnRAR interdit la reconstruction de l'algorithme de compression RAR. Le support RAR est donc limité à la **lecture et l'extraction** via `unrar.dll` officielle, isolée dans le crate `fx-codec`, désactivable à la compilation (feature flag `rar`) et documentée dans `docs/LEGAL.md`. Pas de création d'archives RAR.
+
+### 6.4 Nom du projet
+
+« Ferrix » doit être vérifié (collisions de marques, noms de domaine, dépôts GitHub, crates.io) avant la première publication.
+
+### 6.5 Télémétrie
+
+Strictement **opt-in**, transparente (données listées dans les paramètres), anonyme, désactivable à tout moment. Aucune télémétrie par défaut.
+
+---
+
+## 7. Architecture logicielle
+
+### 7.1 Workspace Cargo (monorepo multi-crates)
+
+```
+ferrix-explorer/
+├── Cargo.toml                  # workspace
+├── rust-toolchain.toml         # MSRV figée
+├── CLAUDE.md                   # règles pour les agents IA (voir section 15)
+├── crates/
+│   ├── fx-core/                # Modèle FS, listing, opérations, undo/redo, checksums
+│   ├── fx-shell/               # Interop COM Shell (IContextMenu, IFileOperation, icônes, propriétés)
+│   ├── fx-index/               # Recherche : USN/MFT reader + tantivy
+│   ├── fx-preview/             # Quick Look : providers d'aperçu
+│   ├── fx-codec/               # Backends compression/décompression pluggables
+│   ├── fx-cloud/               # Providers cloud (trait CloudProvider)
+│   │   ├── onedrive/
+│   │   ├── gdrive/
+│   │   └── dropbox/
+│   ├── fx-terminal/            # Terminal intégré (ConPTY)
+│   ├── fx-a11y/                # Accessibilité (wrapper UI Automation, annonces, rôles)
+│   ├── fx-settings/            # Config TOML, thèmes, raccourcis, persistance, mode portable
+│   ├── fx-ui/                  # Composants Slint (vues, sidebar, onglets, palette)
+│   ├── fx-plugins/             # Runtime WASM (v2, squelette vide en 1.0)
+│   ├── fx-cli/                 # Binaire CLI compagnon `fx`
+│   └── fx-app/                 # Binaire principal, orchestration
+├── resources/                  # Icônes, fichiers .slint, assets, traductions
+├── installer/                  # Scripts cargo-wix, manifest MSIX
+├── tests/                      # Tests d'intégration transverses et benchmarks
+└── docs/
+    ├── LEGAL.md                # Dépendances non permissives et leur statut
+    ├── adr/                    # Architecture Decision Records
+    ├── benchmarks/             # Machine de référence, scénarios, résultats
+    └── user/                   # Documentation utilisateur
+```
+
+### 7.2 Règles de dépendance
+
+- `fx-core` ne dépend **jamais** de `fx-ui` ni de Slint. Toute la logique métier est testable sans fenêtre.
+- Seuls `fx-shell`, `fx-terminal` et `fx-a11y` contiennent du code `unsafe` ou du COM brut. Tout `unsafe` est accompagné d'un commentaire `// SAFETY:`.
+- `fx-codec` et `fx-preview` exposent des traits ; les implémentations optionnelles sont derrière des feature flags.
+- `fx-cli` réutilise `fx-core` et `fx-index`, jamais `fx-ui`.
+
+### 7.3 Modèle de threading
+
+| Contexte | Rôle | Règle |
+|---|---|---|
+| **Thread UI** (boucle Slint) | Rendu et événements d'entrée | **Aucun I/O bloquant**, aucun calcul long |
+| **Runtime `tokio`** | I/O async, réseau, cloud, orchestration | Communique avec l'UI via `invoke_from_event_loop` |
+| **Pool `rayon`** | Parcours FS, hash, indexation initiale | Résultats streamés par lots, jamais d'attente bloquante côté UI |
+| **Threads dédiés** | Lecture USN Journal, pompes ConPTY | Canaux `crossbeam` ou `tokio::sync::mpsc` |
+
+Chaque tâche longue est **annulable** (`CancellationToken`) et **remontée** à l'UI avec un état (en attente, en cours, terminée, erreur).
+
+### 7.4 Modèle de données principal
+
+Structure `FsEntry` (simplifiée) :
+- `path` (stocké en `OsString`/UTF-16 pour supporter les chemins longs `\\?\`)
+- `name`, `kind` (fichier, dossier, lien, point de reparse, placeholder cloud…)
+- `size`, `created`, `modified`, `accessed`
+- `attributes` (compressé, chiffré, caché, hors ligne…)
+- `icon_key` (référence vers le cache d'icônes)
+- `sync_state` (optionnel : synchronisé, en cours, erreur, en ligne uniquement)
+- `git_state` (optionnel, v1.5)
+- `tags` (optionnel, v1.5)
+
+### 7.5 Cache multi-niveaux
+
+| Niveau | Contenu | Politique |
+|---|---|---|
+| **L1 mémoire** | Icônes, miniatures, listings récents, aperçus | LRU borné, taille configurable |
+| **L2 SQLite** | Récents, épinglés, tags, workspaces, configuration, métadonnées de listing | Persistant, migrations versionnées |
+| **L3 disque** | Index `tantivy`, cache de miniatures, cache de hash | Dans `%LOCALAPPDATA%\FerrixExplorer\cache`, purgeable |
+
+### 7.6 Emplacement des données
+
+- Mode standard : `%APPDATA%\FerrixExplorer\` (configuration) et `%LOCALAPPDATA%\FerrixExplorer\` (cache, index).
+- Mode portable : tout dans un dossier `data\` à côté de l'exécutable. Aucune écriture dans le registre ni dans `%APPDATA%`.
+
+---
+
+## 8. Moteur Quick Look et compression
+
+### 8.1 Principe directeur
+
+Pour chaque type de contenu, Ferrix choisit **la bibliothèque la plus rapide disponible sous licence permissive**. Des moteurs plus rapides mais sous licence restrictive (LZTurbo, MuPDF, ffmpeg complet) peuvent être ajoutés comme **backends optionnels**, installés et activés explicitement par l'utilisateur, jamais par défaut.
+
+### 8.2 Table des moteurs par type
+
+| Type | Moteur par défaut (OSS, inclus) | Backend « performance » optionnel | Remarque |
+|---|---|---|---|
+| Images JPEG/PNG/WebP/AVIF | `zune-image` (Rust pur, SIMD) | `turbojpeg` (libjpeg-turbo) pour débit JPEG maximal | Décodage progressif pour aperçu rapide |
+| Images RAW | `rawloader` ou successeur (Rust pur) | `libraw` (LGPL), activable | Aperçu via vignette embarquée en priorité |
+| Redimensionnement et miniatures | `fast_image_resize` (SIMD) | — | Miniatures en arrière-plan, priorisées par viewport |
+| Archives ZIP / Deflate | `libdeflater` (bindings libdeflate, MIT) | **LZTurbo** (plugin externe, licence tierce) | Backend choisi selon préférence utilisateur |
+| Archives 7z | `sevenz-rust` (Rust pur) | SDK 7-Zip natif en fallback | Lecture et création |
+| Archives RAR | `unrar` (lecture seule) | — | Licence restrictive, feature `rar` (voir 6.3) |
+| Compression interne (cache, transferts) | `zstd` (BSD) | LZTurbo si installé | Mode long-range pour gros volumes |
+| PDF | `pdfium-render` (Pdfium, BSD) | — | MuPDF exclu (AGPL) |
+| Vidéo (vignette et lecture) | Windows Media Foundation (natif) | `ffmpeg` (plugin, LGPL/GPL selon build) | Zéro dépendance licence par défaut |
+| Audio (waveform, métadonnées) | `symphonia` (MPL-2.0) | — | |
+| Code source et texte | `tree-sitter` (MIT) | `syntect` en fallback | Coloration incrémentale |
+| Polices | DirectWrite (natif) | — | Aperçu avec texte d'exemple |
+| Office (docx, xlsx, pptx) | Shell Preview Handlers natifs | — | Parsing custom reporté en v2 |
+| Listing d'archive (aperçu) | Backend d'archive ci-dessus | — | Pas d'extraction |
+
+### 8.3 Architecture pluggable (traits Rust)
+
+```rust
+/// Backend de (dé)compression. Implémentations : builtin, perf (opt-in), external (plugin).
+pub trait CompressionBackend: Send + Sync {
+    fn id(&self) -> &'static str;
+    fn kind(&self) -> BackendKind;              // Builtin | OptionalPerf | External
+    fn supports(&self, format: ArchiveFormat) -> bool;
+    fn decompress(&self, input: &[u8], out: &mut Vec<u8>) -> Result<usize, CodecError>;
+    fn compress(&self, input: &[u8], level: u8, out: &mut Vec<u8>) -> Result<usize, CodecError>;
+}
+
+/// Fournisseur d'aperçu Quick Look.
+pub trait PreviewProvider: Send + Sync {
+    fn id(&self) -> &'static str;
+    fn can_preview(&self, meta: &FileMeta) -> bool;
+    fn priority(&self) -> u8;
+    fn render(
+        &self,
+        path: &Path,
+        budget: PreviewBudget,               // temps max, taille max
+        cancel: &CancellationToken,
+    ) -> Result<PreviewContent, PreviewError>;
+}
+```
+
+**Règle de sélection du backend** (dans `BackendRegistry` et `PreviewRegistry`) :
+1. Préférence explicite de l'utilisateur (paramètres), si le backend est disponible.
+2. Backend `OptionalPerf` ou `External` activé et détecté.
+3. Backend `Builtin` (toujours disponible).
+
+**Règle de repli** : si un provider échoue ou dépasse son budget, le suivant est tenté, puis le Shell Preview Handler natif, puis l'icône système. L'échec n'est jamais silencieux : il est journalisé (`tracing`) et signalé de façon discrète dans l'aperçu.
+
+### 8.4 Expérience Quick Look
+
+- Activation par **barre d'espace** sur l'élément sélectionné ; fermeture par Échap ou nouvelle barre d'espace.
+- Navigation pendant l'aperçu : flèches haut/bas (élément précédent/suivant), plein écran (F11 ou double-clic).
+- Rendu **asynchrone et annulable** : changer d'élément annule le rendu en cours.
+- Cache L1 des aperçus récents.
+- Métadonnées EXIF/média affichables dans un panneau latéral (v1.5).
+
+---
+
+## 9. Backlog fonctionnel
+
+**Légende**
+- **Impact** : 1 (faible) à 5 (critique).
+- **Effort** : 1 (trivial) à 5 (très complexe).
+- **Priorité** : `MVP` (release 1.0), `v1.5` (post-lancement rapide), `v2` (vision long terme), `Community` (bon ticket pour contributeurs externes).
+- **Tranche** : numéro de la tranche de la section 11.
+
+### 9.1 Navigation (NAV)
+
+| ID | Fonctionnalité | Impact | Effort | Priorité | Tranche |
+|---|---|---|---|---|---|
+| NAV-01 | Listing asynchrone d'un dossier (jwalk) | 5 | 2 | MVP | 1 |
+| NAV-02 | Vue liste et vue détails (colonnes nom, taille, date, type) | 5 | 2 | MVP | 1 |
+| NAV-03 | Vues icônes (petite, moyenne, grande, très grande), mosaïque, contenu | 4 | 3 | MVP | 9 |
+| NAV-04 | Breadcrumb cliquable avec menu déroulant des sous-dossiers | 5 | 2 | MVP | 1 |
+| NAV-05 | Barre d'adresse éditable (saisie directe du chemin, autocomplétion) | 4 | 1 | MVP | 1 |
+| NAV-06 | Historique back/forward (Alt+←/→, boutons latéraux de la souris) | 4 | 1 | MVP | 1 |
+| NAV-07 | Treeview des dossiers (arborescence) | 3 | 2 | MVP | 4 |
+| NAV-08 | Filtrage à la volée (liste filtrée en temps réel) | 4 | 2 | MVP | 1 |
+| NAV-09 | Tri multi-critères et groupement (type, date, taille) | 4 | 2 | MVP | 1 et 9 |
+| NAV-10 | Zoom Ctrl+molette (taille des icônes) | 4 | 2 | MVP | 9 |
+| NAV-11 | Virtualisation des listes (rendu des seuls éléments visibles) | 5 | 3 | MVP | 1 |
+| NAV-12 | Chemins longs (> 260 caractères, préfixe `\\?\`) | 4 | 2 | MVP | 1 |
+| NAV-13 | Multi-onglets (Ctrl+T, Ctrl+W, Ctrl+Tab, réordonnancement, détachement) | 5 | 3 | MVP | 5 |
+| NAV-14 | Multi-fenêtres indépendantes | 4 | 2 | MVP | 5 |
+| NAV-15 | Split view (deux panneaux dans un onglet) | 4 | 3 | MVP | 5 |
+| NAV-16 | Mode dual-pane façon Commander (copie vers le panneau opposé, navigation synchronisée optionnelle) | 4 | 3 | MVP | 5 |
+
+### 9.2 Sidebar (SID)
+
+| ID | Fonctionnalité | Impact | Effort | Priorité | Tranche |
+|---|---|---|---|---|---|
+| SID-01 | Épinglés (ajout, retrait, réordonnancement par glisser-déposer) | 4 | 2 | MVP | 4 |
+| SID-02 | Accès rapide (dossiers fréquents, calcul dynamique) | 3 | 2 | MVP | 4 |
+| SID-03 | Récents (fichiers et dossiers, stockés en SQLite) | 4 | 2 | MVP | 4 |
+| SID-04 | Bibliothèques (Documents, Images, Musique, Vidéos, Téléchargements via KnownFolders) | 4 | 1 | MVP | 4 |
+| SID-05 | Ce PC : lecteurs locaux avec jauge d'espace libre/utilisé | 4 | 2 | MVP | 4 |
+| SID-06 | Lecteurs réseau mappés (reconnexion automatique) | 3 | 2 | MVP | 4 |
+| SID-07 | Détection des lecteurs amovibles (hotplug USB) | 3 | 2 | MVP | 4 |
+| SID-08 | Workspaces sauvegardés (ensembles d'onglets et de panneaux nommés) | 3 | 2 | MVP | 5 |
+| SID-09 | Section « Comptes cloud » avec statut et quota | 4 | 3 | v1.5 | 11 |
+| SID-10 | Découverte réseau SMB (voisinage réseau) | 3 | 3 | v1.5 | 14 |
+
+### 9.3 Opérations sur fichiers (OPS)
+
+| ID | Fonctionnalité | Impact | Effort | Priorité | Tranche |
+|---|---|---|---|---|---|
+| OPS-01 | Copier, couper, coller (presse-papiers Windows, formats CF_HDROP et Preferred DropEffect) | 5 | 3 | MVP | 2 |
+| OPS-02 | Renommer en ligne (F2) | 5 | 2 | MVP | 2 |
+| OPS-03 | Renommage par lot avec regex (aperçu avant application) | 4 | 2 | MVP | 7 |
+| OPS-04 | Supprimer vers la Corbeille, et suppression définitive (Maj+Suppr) | 5 | 2 | MVP | 2 |
+| OPS-05 | Annuler / rétablir (undo/redo) des opérations de l'application | 4 | 3 | MVP | 2 |
+| OPS-06 | Glisser-déposer interne (déplacer, copier) | 5 | 3 | MVP | 2 |
+| OPS-07 | Glisser-déposer OLE vers et depuis d'autres applications | 4 | 4 | MVP | 3 |
+| OPS-08 | Opérations de copie et déplacement via IFileOperation (boîte de progression native) | 4 | 3 | MVP | 3 |
+| OPS-09 | Boîte de conflit (remplacer, garder les deux, ignorer, annuler) | 4 | 2 | MVP | 2 |
+| OPS-10 | Créer dossier et fichier (Ctrl+Maj+N) | 4 | 1 | MVP | 2 |
+| OPS-11 | Sélection multiple (Ctrl/Maj+clic, sélection par rectangle) | 5 | 2 | MVP | 2 |
+| OPS-12 | Checksums MD5, SHA-256, BLAKE3 (menu et panneau) | 3 | 1 | MVP | 2 |
+| OPS-13 | Nettoyeur de dossiers vides | 2 | 1 | MVP | 2 |
+| OPS-14 | Propriétés natives (ShellExecuteEx, verbe `properties`) | 4 | 1 | MVP | 3 |
+| OPS-15 | « Ouvrir avec » natif | 3 | 1 | MVP | 3 |
+| OPS-16 | Compression et décompression (ZIP, 7z) via `fx-codec` | 4 | 3 | MVP | 8 |
+| OPS-17 | File d'attente d'opérations (pause, reprise, réordonnancement, annulation) | 4 | 3 | v1.5 | 12 |
+| OPS-18 | Vérification d'intégrité après copie (hash source/destination) | 3 | 2 | v1.5 | 12 |
+| OPS-19 | Détecteur de doublons (par hash, pas seulement par nom) | 4 | 3 | v1.5 | 12 |
+| OPS-20 | Montage d'images ISO et VHD/VHDX | 2 | 1 | v1.5 | 12 |
+| OPS-21 | Reprise de transferts interrompus | 3 | 4 | v2 | 16 |
+| OPS-22 | Suppression sécurisée (écrasement multi-passes) | 2 | 2 | v2 | 16 |
+| OPS-23 | Restauration de versions précédentes (Volume Shadow Copy / Historique des fichiers) | 3 | 3 | v2 | 16 |
+| OPS-24 | Comparaison de fichiers et dossiers (diff, synchronisation visuelle) | 3 | 3 | v2 | 16 |
+
+### 9.4 Quick Look et aperçus (PRV)
+
+| ID | Fonctionnalité | Impact | Effort | Priorité | Tranche |
+|---|---|---|---|---|---|
+| PRV-01 | Aperçu instantané par barre d'espace (cadre, navigation, plein écran) | 5 | 4 | MVP | 8 |
+| PRV-02 | Images (formats courants) et RAW (vignette embarquée prioritaire) | 4 | 3 | MVP | 8 |
+| PRV-03 | PDF (pages, zoom, navigation) | 4 | 3 | MVP | 8 |
+| PRV-04 | Vidéo et audio : vignette, lecture, waveform | 4 | 4 | MVP | 8 |
+| PRV-05 | Code source et texte avec coloration syntaxique | 3 | 2 | MVP | 8 |
+| PRV-06 | Listing des archives (sans extraction) | 4 | 2 | MVP | 8 |
+| PRV-07 | Polices (aperçu avec texte d'exemple, DirectWrite) | 2 | 2 | MVP | 8 |
+| PRV-08 | Documents Office via Shell Preview Handlers | 3 | 2 | MVP | 8 |
+| PRV-09 | Panneau de métadonnées EXIF et média | 3 | 2 | v1.5 | 12 |
+| PRV-10 | Navigation dans les archives comme dossier virtuel (sans extraction) | 4 | 2 | v1.5 | 12 |
+
+### 9.5 Organisation (ORG)
+
+| ID | Fonctionnalité | Impact | Effort | Priorité | Tranche |
+|---|---|---|---|---|---|
+| ORG-01 | Barre de statut enrichie (sélection, taille totale, espace libre) | 3 | 1 | MVP | 2 |
+| ORG-02 | Tags colorés indépendants de l'arborescence | 3 | 3 | v1.5 | 12 |
+| ORG-03 | Treemap d'usage disque (visualisation intégrée) | 4 | 3 | v1.5 | 12 |
+| ORG-04 | Dossiers virtuels (smart folders, basés sur des critères) | 3 | 3 | v2 | 16 |
+| ORG-05 | Règles d'organisation automatique (type Hazel) | 2 | 3 | Community | — |
+
+### 9.6 Recherche (SRC)
+
+| ID | Fonctionnalité | Impact | Effort | Priorité | Tranche |
+|---|---|---|---|---|---|
+| SRC-01 | Barre de recherche globale (Ctrl+F et saisie directe) | 5 | 3 | MVP | 6 |
+| SRC-02 | Lecture de l'USN Journal et de la MFT NTFS pour indexation initiale | 5 | 4 | MVP | 6 |
+| SRC-03 | Index tantivy avec mise à jour en direct (USN) | 5 | 4 | MVP | 6 |
+| SRC-04 | Filtres avancés (type, taille, date, attributs) | 4 | 2 | MVP | 6 |
+| SRC-05 | Repli sur parcours `jwalk` si le volume est inaccessible sans privilèges | 4 | 2 | MVP | 6 |
+| SRC-06 | Recherche plein texte dans le contenu (texte, code, PDF extrait) | 3 | 4 | MVP (optionnelle, désactivée par défaut) | 6 |
+| SRC-07 | Indicateur de progression d'indexation et contrôle (pause, reprise) | 3 | 2 | MVP | 6 |
+
+### 9.7 Power-user (PWR)
+
+| ID | Fonctionnalité | Impact | Effort | Priorité | Tranche |
+|---|---|---|---|---|---|
+| PWR-01 | Palette de commandes (Ctrl+Maj+P) | 5 | 2 | MVP | 7 |
+| PWR-02 | Terminal intégré (ConPTY) dans le dossier courant (PowerShell, cmd, WSL) | 4 | 2 | MVP | 7 |
+| PWR-03 | CLI compagnon `fx` (`fx open .`, `fx search "*.rs"`) | 4 | 2 | MVP | 7 |
+| PWR-04 | Support WSL natif (`\\wsl$\`, distributions listées) | 3 | 2 | MVP | 7 |
+| PWR-05 | Raccourcis clavier : parité Explorer et remappage utilisateur | 4 | 2 | MVP | 7 |
+| PWR-06 | Badges Git (modifié, ajouté, ignoré) dans les listes | 4 | 3 | v1.5 | 13 |
+| PWR-07 | Mode de navigation type vim (hjkl) | 2 | 2 | Community | — |
+
+### 9.8 Personnalisation et Windows 11 (UX)
+
+| ID | Fonctionnalité | Impact | Effort | Priorité | Tranche |
+|---|---|---|---|---|---|
+| UX-01 | Thème clair et sombre, synchronisé avec Windows (et surcharge manuelle) | 4 | 2 | MVP | 9 |
+| UX-02 | Effet Mica (Win11) et repli propre sur Win10 | 4 | 2 | MVP | 9 |
+| UX-03 | Compatibilité Snap Layouts (Win11) | 3 | 1 | MVP | 9 |
+| UX-04 | Mode portable (exécutable sur clé USB, données à côté) | 3 | 1 | MVP | 9 |
+| UX-05 | Mémorisation de la position et de la taille par écran | 2 | 1 | MVP | 9 |
+| UX-06 | Colonnes personnalisables (ajout, retrait, réordonnancement, largeur) | 3 | 2 | MVP | 9 |
+| UX-07 | Densité d'affichage (compacte, confortable) | 3 | 1 | MVP | 9 |
+| UX-08 | Barre d'outils personnalisable | 2 | 2 | MVP | 9 |
+| UX-09 | Jump Lists (clic droit sur l'icône de la barre des tâches) | 3 | 2 | v1.5 | 13 |
+| UX-10 | Packs d'icônes personnalisés | 2 | 2 | Community | — |
+
+### 9.9 Système (SYS)
+
+| ID | Fonctionnalité | Impact | Effort | Priorité | Tranche |
+|---|---|---|---|---|---|
+| SYS-01 | Support Dev Drive (Windows 11) : détection et bonnes pratiques | 2 | 1 | MVP | 4 |
+| SYS-02 | Indicateurs visuels des fichiers compressés et chiffrés | 3 | 1 | MVP | 9 |
+| SYS-03 | Menu contextuel natif complet (fusion des `IContextMenu`, extensions tierces) | 5 | 4 | MVP | 3 |
+| SYS-04 | Menu contextuel additionnel propre à Ferrix | 3 | 2 | MVP | 3 |
+| SYS-05 | Récupération de session après plantage | 3 | 2 | v1.5 | 13 |
+| SYS-06 | Élévation UAC ponctuelle (opération admin sans relancer l'application) | 3 | 3 | v1.5 | 13 |
+| SYS-07 | Définir Ferrix comme explorateur par défaut (si possible proprement) | 3 | 3 | v1.5 | 13 |
+| SYS-08 | Éditeur simplifié des ACL NTFS | 2 | 3 | v2 | 16 |
+| SYS-09 | Télémétrie opt-in transparente (rapports de crash anonymes) | 2 | 2 | v1.5 | 13 |
+
+### 9.10 Accessibilité (A11Y)
+
+| ID | Fonctionnalité | Impact | Effort | Priorité | Tranche |
+|---|---|---|---|---|---|
+| A11Y-01 | Squelette `fx-a11y` (élément racine UIA, rôles de base) | 5 | 2 | MVP | 0 |
+| A11Y-02 | Support UI Automation complet (listes, arbres, onglets, boutons, annonces) | 5 | 4 | MVP | 1 à 10 (continu) |
+| A11Y-03 | Navigation 100 % clavier, y compris menus et palette | 4 | 2 | MVP | 1 à 10 (continu) |
+| A11Y-04 | Mode contraste élevé (suit le thème système) | 3 | 1 | MVP | 10 |
+| A11Y-05 | Mise à l'échelle DPI et taille de texte du système | 4 | 2 | MVP | 9 |
+| A11Y-06 | Internationalisation FR et EN | 3 | 2 | MVP | 10 |
+| A11Y-07 | Audit avec Narrator et NVDA, documenté | 4 | 2 | MVP | 10 |
+
+### 9.11 Cloud (CLD)
+
+| ID | Fonctionnalité | Impact | Effort | Priorité | Tranche |
+|---|---|---|---|---|---|
+| CLD-01 | Trait générique `CloudProvider` (list, status, quota, sync_state) | 4 | 3 | v1.5 | 11 |
+| CLD-02 | OneDrive : détection du dossier synchronisé, badges via Cloud Files API | 5 | 4 | v1.5 | 11 |
+| CLD-03 | Google Drive : détection du client local, repli sur API Drive v3 | 4 | 4 | v1.5 | 11 |
+| CLD-04 | Dropbox : détection du client local, repli sur API | 3 | 3 | v1.5 | 11 |
+| CLD-05 | Affichage du quota par compte | 3 | 2 | v1.5 | 11 |
+| CLD-06 | Authentification OAuth2 (navigateur système, stockage sécurisé des jetons) | 4 | 3 | v1.5 | 11 |
+
+### 9.12 Réseau avancé (NET)
+
+| ID | Fonctionnalité | Impact | Effort | Priorité | Tranche |
+|---|---|---|---|---|---|
+| NET-01 | Client FTP, SFTP et WebDAV navigable comme un dossier | 3 | 4 | v2 | 14 |
+| NET-02 | Fichiers hors ligne (cache réseau) | 2 | 3 | Community | — |
+
+### 9.13 Extensibilité (EXT)
+
+| ID | Fonctionnalité | Impact | Effort | Priorité | Tranche |
+|---|---|---|---|---|---|
+| EXT-01 | Plugins WASM sandboxés (API stable et versionnée) | 5 | 5 | v2 | 16 |
+| EXT-02 | Scripting Rhai pour actions personnalisées | 3 | 3 | v2 | 16 |
+| EXT-03 | Gestionnaire simplifié des associations de fichiers | 2 | 2 | v2 | 16 |
+| EXT-04 | Interface de ligne de commande étendue (scripts, sorties JSON) | 3 | 2 | v1.5 | 7 (base) et 13 |
+
+---
+
+## 10. Exigences non fonctionnelles
+
+### 10.1 Performance
+Voir les cibles de la section 3.2. Toute régression supérieure à 10 % sur un scénario de benchmark bloque la fusion (CI, scénarios documentés).
+
+### 10.2 Fiabilité
+- Aucune opération destructive sans confirmation ou passage par la Corbeille (sauf suppression définitive explicitement demandée).
+- Les opérations interrompues (coupure, débranchement USB) laissent des fichiers cohérents ; les opérations incomplètes sont signalées.
+- Pas de crash sur chemin invalide, nom illégal, permissions refusées : erreurs journalisées et présentées à l'utilisateur.
+
+### 10.3 Sécurité
+- Aucune donnée envoyée sans consentement explicite (télémétrie opt-in).
+- Jetons OAuth stockés via le gestionnaire d'identifiants Windows (Credential Manager), jamais en clair dans les fichiers de configuration.
+- Plugins WASM sans accès par défaut : permissions déclarées et demandées (v2).
+- Revue de sécurité des dépendances (`cargo audit`, `cargo deny`) dans la CI.
+
+### 10.4 Accessibilité
+- Conforme aux bonnes pratiques WCAG 2.2 applicables aux applications desktop, et testée avec Narrator et NVDA.
+- Navigation complète au clavier sans piège de focus.
+- Contraste élevé, taille de texte système respectée.
+
+### 10.5 Compatibilité
+- Windows 10 22H2 et Windows 11 (x64). ARM64 en stretch, à partir de la 1.0 si la chaîne de build le permet.
+- Fonctionnalités Win11 (Mica, Snap Layouts, Dev Drive) avec repli propre sur Win10.
+
+### 10.6 Internationalisation
+- Textes externalisés dès la Tranche 0 (fichiers de ressources), FR et EN livrés en 1.0.
+
+### 10.7 Maintenabilité
+- Couverture de tests élevée sur `fx-core`, `fx-index`, `fx-codec`, `fx-preview`.
+- Documentation rustdoc sur toutes les API publiques.
+
+---
+
+## 11. Roadmap en tranches
+
+> Chaque tranche est une version livrable et testable. Une tranche ne démarre qu'une fois les critères d'acceptation de la précédente validés. L'accessibilité (UIA) et la performance sont **transverses** : elles sont vérifiées à chaque tranche, pas seulement à la fin.
+
+| # | Tranche | Contenu clé | Priorité |
+|---|---|---|---|
+| 0 | Fondations | Workspace, fenêtre Slint, CI, logging, `fx-a11y` squelette, décision UI | MVP |
+| 1 | Navigation de base | Listing, vues liste et détails, breadcrumb, historique, filtrage, chemins longs, virtualisation | MVP |
+| 2 | Opérations fichiers | Copier/couper/coller, renommer, supprimer, créer, sélection, undo/redo, checksums, statut, nettoyeur | MVP |
+| 3 | Shell natif | `IContextMenu`, `IFileOperation`, propriétés, « Ouvrir avec », OLE drag-and-drop, miniatures Shell | MVP |
+| 4 | Sidebar et lecteurs | Épinglés, accès rapide, récents, bibliothèques, Ce PC, hotplug, Dev Drive, treeview | MVP |
+| 5 | Onglets, fenêtres, dual-pane | Onglets, multi-fenêtres, split view, mode Commander, workspaces | MVP |
+| 6 | Recherche globale | USN/MFT, tantivy, mise à jour en direct, filtres, repli, plein texte optionnel | MVP |
+| 7 | Power-user | Palette, terminal ConPTY, CLI `fx`, WSL, renommage regex, raccourcis et remappage | MVP |
+| 8 | Quick Look et compression | `fx-preview`, `fx-codec`, aperçus complets, compression ZIP/7z | MVP |
+| 9 | Personnalisation Win11 | Thèmes, Mica, Snap Layouts, zoom, vues, colonnes, densité, mode portable, multi-écrans, DPI | MVP |
+| 10 | Accessibilité et i18n | UIA complet, contraste élevé, audit Narrator/NVDA, FR/EN | MVP |
+| 11 | Cloud | OneDrive (CfApi), Google Drive, Dropbox, quotas, OAuth2 | v1.5 |
+| 12 | Outils avancés | Doublons, treemap, file d'attente, intégrité, tags, EXIF, archives virtuelles, ISO/VHD | v1.5 |
+| 13 | Dev et système | Badges Git, Jump Lists, récupération de session, UAC, défaut, télémétrie opt-in | v1.5 |
+| 14 | Réseau | SMB (voisinage réseau), FTP/SFTP/WebDAV | v1.5 / v2 |
+| 15 | Performance | Benchmarks 1 M fichiers, profiling, cache GPU, cold start | Transverse |
+| 16 | Extensibilité | Plugins WASM, Rhai, associations, diff, smart folders, suppression sécurisée, versions, ACL | v2 |
+| 17 | Packaging | MSI/MSIX, signature, mise à jour automatique, version portable | MVP (release) |
+| 18 | Release 1.0 | Documentation utilisateur, guide contributeur, bêta publique, annonce | MVP (release) |
+
+### Tranche 0 — Fondations
+
+**Objectif** : workspace fonctionnel, fenêtre vide, CI verte, décision UI prise.
+
+**Contenu**
+- Workspace multi-crates (section 7.1), `rust-toolchain.toml`, `CLAUDE.md`.
+- Prototype Slint **et** prototype iced (liste de 10 000 lignes) pour décider (section 6.1), résultat dans `docs/adr/0001-ui-framework.md`.
+- Fenêtre principale avec titre, icône, taille mémorisée.
+- Squelette `fx-a11y` : l'élément racine expose un nom et un rôle via UI Automation.
+- Logging `tracing` (fichier rotatif dans `%LOCALAPPDATA%`).
+- CI GitHub Actions : build, tests, `clippy`, `fmt`, `cargo deny`.
+- `docs/LEGAL.md` et `docs/benchmarks/REFERENCE.md` créés (squelettes).
+
+**Critères d'acceptation**
+- `cargo run` ouvre une fenêtre sur Windows 10 et Windows 11.
+- La CI est verte sur `windows-latest`.
+- Narrator annonce le nom de la fenêtre à l'ouverture.
+- La décision UI est documentée.
+
+### Tranche 1 — Navigation de base
+
+**Objectif** : parcourir le système de fichiers en lecture seule, de façon fluide.
+
+**Contenu**
+- `fx-core` : `FsEntry`, `DirectoryModel`, listing async (jwalk), streaming par lots.
+- Vues liste et détails, tri simple, virtualisation.
+- Double-clic : ouvrir un dossier (navigation) ou un fichier (application associée via `ShellExecute`).
+- Barre d'adresse éditable, breadcrumb, historique back/forward (y compris boutons souris).
+- Filtrage à la volée.
+- Chemins longs (`\\?\`).
+- Icônes système simples (`SHGetFileInfo`).
+- Navigation clavier de base et rôles UIA sur la liste et les colonnes.
+
+**Critères d'acceptation**
+- Navigation complète dans `C:\`, retour arrière et avant fonctionnels.
+- Dossier de 50 000 fichiers : premiers éléments visibles en < 100 ms, scroll à 60 FPS.
+- Un chemin de plus de 260 caractères est lisible et navigable.
+- Narrator annonce les éléments de la liste et les colonnes.
+
+### Tranche 2 — Opérations fichiers
+
+**Objectif** : CRUD complet avec sécurité (Corbeille, undo).
+
+**Contenu**
+- Copier, couper, coller (presse-papiers Windows, formats standards).
+- Renommer en ligne (F2), créer dossier et fichier.
+- Supprimer vers la Corbeille, suppression définitive explicite.
+- Sélection multiple et par rectangle.
+- Glisser-déposer interne.
+- Boîte de conflit.
+- Undo/redo des déplacements, renommages, créations, suppressions (restauration depuis la Corbeille).
+- Checksums (MD5, SHA-256, BLAKE3), nettoyeur de dossiers vides, barre de statut enrichie.
+
+**Critères d'acceptation**
+- Toutes les opérations fonctionnent avec retour visuel de progression.
+- Les fichiers supprimés se retrouvent dans la Corbeille Windows.
+- Ctrl+Z annule la dernière opération réversible.
+- Les conflits de noms proposent les quatre choix.
+
+### Tranche 3 — Shell natif
+
+**Objectif** : comportements identiques à Explorer là où c'est attendu.
+
+**Contenu**
+- Menu contextuel natif via `IContextMenu` (fusion des entrées, extensions tierces).
+- Menu contextuel additionnel Ferrix.
+- Copie et déplacement via `IFileOperation` avec boîte de progression native.
+- Propriétés natives, « Ouvrir avec » natif.
+- Miniatures via `IThumbnailProvider` avec cache disque.
+- Glisser-déposer OLE vers et depuis d'autres applications.
+
+**Critères d'acceptation**
+- Le clic droit sur un fichier affiche les mêmes entrées qu'Explorer, y compris 7-Zip ou Git s'ils sont installés.
+- Un fichier glissé depuis Ferrix vers le Bureau ou Explorer est copié correctement, et inversement.
+- Un fichier de 2 Go copié affiche la boîte de progression native.
+
+### Tranche 4 — Sidebar et lecteurs
+
+**Objectif** : navigation par la barre latérale complète.
+
+**Contenu**
+- Épinglés (glisser-déposer, persistance SQLite).
+- Accès rapide, récents, bibliothèques (KnownFolders).
+- Ce PC avec jauge d'espace.
+- Lecteurs réseau mappés, détection hotplug USB.
+- Treeview des dossiers.
+- Détection de Dev Drive (Windows 11).
+
+**Critères d'acceptation**
+- Les épinglés persistent entre les sessions et se réordonnent par glisser-déposer.
+- Une clé USB branchée apparaît sans redémarrage, et disparaît proprement au retrait.
+- Les jauges d'espace correspondent à celles d'Explorer à 1 % près.
+
+### Tranche 5 — Onglets, fenêtres, dual-pane
+
+**Objectif** : productivité multi-contexte.
+
+**Contenu**
+- Onglets (Ctrl+T, Ctrl+W, Ctrl+Tab, réordonnancement, détachement en nouvelle fenêtre).
+- Multi-fenêtres indépendantes.
+- Split view et mode dual-pane Commander (copie vers le panneau opposé, navigation synchronisée optionnelle).
+- Workspaces sauvegardés et rechargeables en un clic.
+- Restauration des onglets à l'ouverture (session basique ; la récupération après plantage est en tranche 13).
+
+**Critères d'acceptation**
+- La gestion d'onglets est comparable à un navigateur web (réordonnancement fluide, détachement sans perte d'état).
+- Un workspace nommé se restaure à l'identique.
+
+### Tranche 6 — Recherche globale
+
+**Objectif** : recherche instantanée façon Everything.
+
+**Contenu**
+- Lecture de la MFT et de l'USN Journal (NTFS) pour l'indexation initiale, sur tous les volumes.
+- Index tantivy (nom, chemin, taille, dates, attributs).
+- Mise à jour en direct via USN Journal.
+- Repli sur `jwalk` sans privilèges administrateur (avec indication à l'utilisateur).
+- Interface de recherche avec résultats instantanés et surlignage.
+- Filtres avancés.
+- Plein texte optionnel (désactivé par défaut) pour fichiers texte, code, PDF.
+- Progression et contrôle de l'indexation.
+
+**Critères d'acceptation**
+- Indexation initiale d'un volume de 1 M de fichiers en < 60 s.
+- Recherche par nom en < 50 ms (p95) après indexation.
+- Une création ou suppression de fichier apparaît dans les résultats en < 2 s.
+- Le mode sans privilèges fonctionne avec un message clair.
+
+### Tranche 7 — Power-user
+
+**Objectif** : productivité clavier et outils développeur.
+
+**Contenu**
+- Palette de commandes (Ctrl+Maj+P), toutes les actions accessibles par nom.
+- Terminal intégré (ConPTY) dans le dossier courant, profils PowerShell, cmd, WSL.
+- CLI `fx` (`fx open <chemin>`, `fx search <motif>`, sortie texte et JSON).
+- Support WSL (`\\wsl$\`).
+- Renommage par lot regex avec aperçu.
+- Raccourcis clavier : parité Explorer complète, remappage dans la configuration.
+
+**Critères d'acceptation**
+- Tous les raccourcis standards d'Explorer fonctionnent.
+- Le terminal s'ouvre dans le dossier courant en moins de 500 ms.
+- `fx open .` ouvre une fenêtre sur le dossier courant.
+- Le renommage par lot affiche un aperçu avant application et permet l'annulation.
+
+### Tranche 8 — Quick Look et compression
+
+**Objectif** : aperçu instantané et archives.
+
+**Contenu**
+- `fx-preview` : providers pour images, RAW, PDF, vidéo, audio, code, archives (listing), polices, Office (Shell).
+- `fx-codec` : backends ZIP (libdeflater), 7z (sevenz-rust), zstd pour usage interne ; support des backends optionnels (dont LZTurbo) via le registre.
+- Aperçu par barre d'espace, navigation clavier, plein écran, rendu annulable.
+- Création et extraction ZIP et 7z.
+- Lecture RAR via feature `rar`.
+
+**Critères d'acceptation**
+- Aperçu d'une image standard en < 100 ms.
+- Première page PDF affichée en < 300 ms.
+- Un changement d'élément annule le rendu précédent sans fuite de ressources.
+- L'application compile et fonctionne **sans** aucun backend optionnel.
+- LZTurbo n'est ni inclus, ni téléchargé, ni référencé par défaut ; son activation passe par la configuration et affiche l'avertissement de licence.
+
+### Tranche 9 — Personnalisation Windows 11
+
+**Objectif** : look natif et réglages visuels.
+
+**Contenu**
+- Thèmes clair et sombre synchronisés avec Windows, surcharge manuelle.
+- Effet Mica (Win11), repli propre sur Win10.
+- Compatibilité Snap Layouts.
+- Vues icônes, mosaïque, contenu ; zoom Ctrl+molette ; densité ; colonnes personnalisables ; barre d'outils personnalisable.
+- Indicateurs des fichiers compressés et chiffrés.
+- Mode portable (données à côté de l'exécutable).
+- Mémorisation de la géométrie par écran.
+- Respect de la mise à l'échelle DPI et de la taille de texte système.
+
+**Critères d'acceptation**
+- Le thème suit le mode sombre Windows en moins de 1 s.
+- Mica visible sur Win11, repli propre sur Win10.
+- Une copie en mode portable sur clé USB ne modifie ni le registre ni `%APPDATA%`.
+- La fenêtre retrouve sa position sur le bon écran après débranchement d'un moniteur.
+
+### Tranche 10 — Accessibilité et internationalisation
+
+**Objectif** : utilisable sans souris et avec lecteur d'écran.
+
+**Contenu**
+- UI Automation complet sur toutes les vues, sidebar, onglets, palette, boîtes de dialogue, aperçu.
+- Annonces des changements de dossier, résultats de recherche, progression des opérations.
+- Contraste élevé.
+- Audit complet au clavier, sans piège de focus.
+- Traduction FR et EN complète.
+- Audit documenté avec Narrator et NVDA.
+
+**Critères d'acceptation**
+- Un parcours complet (naviguer, copier, renommer, rechercher, ouvrir l'aperçu) est réalisable au clavier et à l'oreille avec NVDA.
+- Aucun contrôle sans nom accessible (vérification automatisée via UIA où possible).
+- Le mode contraste élevé respecte les couleurs système.
+
+### Tranche 11 — Cloud (v1.5)
+
+**Objectif** : comptes cloud comme emplacements natifs.
+
+**Contenu**
+- Trait `CloudProvider` (list, status, quota, sync_state).
+- OneDrive : dossier synchronisé, badges via Cloud Files API (CfApi).
+- Google Drive et Dropbox : détection du client local, repli sur les APIs si nécessaire.
+- Section « Comptes cloud » dans la sidebar, quotas, OAuth2 via navigateur système.
+- Badges : synchronisé, en cours, erreur, en ligne uniquement.
+
+**Critères d'acceptation**
+- Les dossiers synchronisés affichent les bons badges, cohérents avec le client officiel.
+- Un fichier « en ligne uniquement » peut être téléchargé à la demande depuis Ferrix.
+- Les jetons OAuth sont stockés dans le Credential Manager.
+
+### Tranche 12 — Outils avancés (v1.5)
+
+**Contenu**
+- File d'attente d'opérations (pause, reprise, réordonnancement, annulation).
+- Vérification d'intégrité après copie.
+- Détecteur de doublons par hash (par étapes : taille, puis hash partiel, puis hash complet).
+- Treemap d'usage disque.
+- Tags colorés.
+- Panneau EXIF et métadonnées média.
+- Navigation dans les archives comme dossier virtuel.
+- Montage ISO et VHD/VHDX.
+
+**Critères d'acceptation**
+- Le détecteur de doublons ne lit jamais un fichier entier si la taille ou le hash partiel suffit à écarter le candidat.
+- La treemap d'un disque de 500 Go se génère sans bloquer l'interface.
+
+### Tranche 13 — Dev et système (v1.5)
+
+**Contenu**
+- Badges Git (modifié, ajouté, ignoré) avec cache et invalidation sur changement.
+- Jump Lists.
+- Récupération de session après plantage.
+- Élévation UAC ponctuelle.
+- Définir Ferrix comme explorateur par défaut, si techniquement propre.
+- Télémétrie opt-in et rapports de crash anonymes.
+
+**Critères d'acceptation**
+- Les badges Git se mettent à jour en moins de 1 s après un `git add`.
+- Après un plantage, la session est restaurée au redémarrage.
+
+### Tranche 14 — Réseau (v1.5 / v2)
+
+**Contenu**
+- Découverte SMB (voisinage réseau).
+- Client FTP, SFTP et WebDAV navigable comme un dossier local.
+
+**Critères d'acceptation**
+- Un partage SMB découvert apparaît dans la sidebar.
+- Une connexion SFTP permet copier, renommer et supprimer.
+
+### Tranche 15 — Performance (transverse)
+
+**Contenu**
+- Benchmarks automatisés (1k, 10k, 100k, 1M fichiers) avec comparaison à `explorer.exe`.
+- Profiling (`tracing`, Windows Performance Analyzer).
+- Cache GPU des icônes et miniatures (atlas de textures).
+- Réduction du cold start.
+- Détection de fuites mémoire sur navigation longue durée.
+
+**Critères d'acceptation**
+- Un rapport de benchmark reproductible est publié dans `docs/benchmarks/` pour chaque release.
+- Les cibles de la section 3.2 sont atteintes ou un écart documenté est accepté.
+
+### Tranche 16 — Extensibilité et fonctions avancées (v2)
+
+**Contenu**
+- Plugins WASM (`fx-plugins`) avec API versionnée et permissions déclarées.
+- Scripting Rhai.
+- Gestionnaire d'associations de fichiers.
+- Comparaison de dossiers (diff).
+- Dossiers virtuels (smart folders).
+- Suppression sécurisée, reprise de transferts, restauration de versions, éditeur d'ACL.
+
+**Critères d'acceptation**
+- Un plugin d'exemple peut ajouter une action à la palette sans recompiler Ferrix.
+- Un plugin sans permission réseau ne peut pas en utiliser.
+
+### Tranche 17 — Packaging et distribution
+
+**Contenu**
+- Installeur MSI (`cargo-wix`) et paquet MSIX.
+- Version portable en archive ZIP.
+- Signature du code (certificat, même auto-signé en phase de test).
+- Mise à jour automatique via les GitHub Releases, avec vérification de signature.
+- Métadonnées, icône, notes de version générées.
+
+**Critères d'acceptation**
+- Un utilisateur sans connaissance de Rust installe et lance Ferrix en moins de deux minutes.
+- La mise à jour d'une version à la suivante fonctionne sans perte de configuration.
+
+### Tranche 18 — Release 1.0
+
+**Contenu**
+- Documentation utilisateur (installation, raccourcis, FAQ).
+- `CONTRIBUTING.md`, guide d'architecture, liste de « good first issue » (issus du backlog marqué `Community`).
+- Bêta publique et retours utilisateurs.
+- Annonce (GitHub, Reddit r/rust, r/Windows10, Hacker News).
+
+**Critères d'acceptation**
+- Bêta testée par au moins 20 utilisateurs sur des configurations variées.
+- Aucun bug bloquant ouvert, et les bugs majeurs sont corrigés.
+- Les benchmarks de la release sont publiés.
+
+---
+
+## 12. Risques techniques
+
+| Risque | Probabilité | Impact | Mitigation |
+|---|---|---|---|
+| Licence de Slint incompatible avec la licence visée | Élevée | Élevé | Décision en Tranche 0 (prototypes Slint et iced), ADR documenté |
+| Complexité de l'interop COM Shell (`IContextMenu`, `IFileOperation`) | Élevée | Élevé | Temps dédié en Tranche 3, prototypes isolés dans `fx-shell`, tests manuels documentés |
+| USN Journal nécessite des privilèges administrateur sur certains volumes | Moyenne | Moyen | Repli `jwalk` (SRC-05), message clair à l'utilisateur |
+| Maturité de l'UI choisie pour une liste complexe | Moyenne | Élevé | Prototypes comparatifs en Tranche 0, plan B documenté |
+| CfApi peu documentée côté Rust | Élevée | Moyen | Wrapper manuel dans `fx-cloud`, tests sur machines réelles avec OneDrive |
+| Google Drive et Dropbox changent leurs clients locaux ou APIs | Moyenne | Moyen | Abstraction par `CloudProvider`, repli API, tests de non-régression |
+| Licence LZTurbo incompatible avec l'OSS | Certaine | Faible (si respectée) | Jamais inclus par défaut, plugin opt-in, `docs/LEGAL.md` |
+| Licence UnRAR restrictive | Certaine | Faible | Lecture seule, feature `rar`, désactivable |
+| UI Automation difficile à rendre correct | Élevée | Élevé | Démarrage en Tranche 0, tests réels avec Narrator et NVDA, pas seulement une case cochée |
+| Indexation sur très gros volumes (> 5 M fichiers) | Moyenne | Moyen | Indexation incrémentale, progression visible, jamais bloquante pour l'UI |
+| Mises à jour Windows qui modifient le comportement Shell | Moyenne | Moyen | Matrice de tests sur builds Windows récents, CI sur `windows-latest` |
+| Maintenance d'un crate RAW ou d'un binding non actif | Moyenne | Faible | Choix de crates actives, abstraction via trait `PreviewProvider` |
+| Charge de travail sous-estimée (projet très large) | Élevée | Élevé | Découpage en tranches, MVP strict, backlog `v1.5`/`v2` assumé |
+
+---
+
+## 13. Conventions de développement
+
+### 13.1 Définition de « terminé » (DoD) pour chaque tranche
+
+- [ ] Critères d'acceptation de la tranche validés (tests automatisés ou manuels documentés).
+- [ ] `cargo fmt`, `cargo clippy -- -D warnings`, tests verts en CI.
+- [ ] Tests unitaires sur la logique métier ajoutée (`fx-core`, `fx-index`, `fx-codec`, `fx-preview`).
+- [ ] Vérification UIA : chaque nouveau contrôle a un nom et un rôle, testé avec Narrator au minimum.
+- [ ] Vérification clavier : aucune action nouvelle n'est uniquement accessible à la souris.
+- [ ] Benchmarks de non-régression exécutés si un chemin chaud a été touché.
+- [ ] Textes ajoutés dans les fichiers de traduction.
+- [ ] `docs/LEGAL.md` mis à jour si une dépendance a été ajoutée.
+- [ ] ADR créé pour toute décision d'architecture structurante.
+- [ ] Changelog mis à jour.
+
+### 13.2 Code et qualité
+
+- Tests unitaires pour `fx-core`, `fx-index`, `fx-codec`, `fx-preview` ; tests d'intégration manuels documentés pour `fx-shell` (le COM est difficile à simuler).
+- Tout `unsafe` est accompagné d'un commentaire `// SAFETY:` et d'un test ciblé.
+- Pas de `unwrap()` ni `expect()` hors tests et initialisation ; erreurs typées (`thiserror`) dans les bibliothèques, `anyhow` uniquement dans les binaires.
+- Aucun blocage de la boucle UI : tout I/O passe par le runtime ou le pool.
+
+### 13.3 Git
+
+- Conventional Commits : `feat:`, `fix:`, `perf:`, `a11y:`, `docs:`, `refactor:`, `test:`, `build:`, `ci:`.
+- Une tranche = une branche = une ou plusieurs PR, jamais de mélange de tranches.
+- Revue obligatoire avant fusion sur `main`.
+
+### 13.4 Documentation
+
+- README dans chaque crate, rustdoc sur toutes les API publiques.
+- ADR numérotés dans `docs/adr/`.
+- Documentation utilisateur dans `docs/user/`.
+
+### 13.5 Licences
+
+- Licence du projet : MIT OU Apache-2.0 (sous réserve de la décision 6.1).
+- Toute dépendance non permissive est listée dans `docs/LEGAL.md` avec son statut : **par défaut**, **optionnelle**, **isolée** ou **opt-in**.
+- `cargo deny` bloque en CI toute licence non autorisée sans exception documentée.
+
+---
+
+## 14. Glossaire
+
+| Terme | Définition |
+|---|---|
+| **USN Journal** | Journal des modifications d'un volume NTFS, lisible pour une indexation incrémentale. |
+| **MFT** | Master File Table, table des fichiers NTFS, permettant une énumération rapide. |
+| **CfApi** | Cloud Files API de Windows, utilisée par les clients de synchronisation pour les fichiers en ligne uniquement. |
+| **ConPTY** | API Windows de pseudo-terminal, base du terminal intégré. |
+| **UIA** | UI Automation, API d'accessibilité de Windows utilisée par les lecteurs d'écran. |
+| **Quick Look** | Aperçu rapide d'un fichier sans l'ouvrir, par barre d'espace. |
+| **Dual-pane** | Mode à deux panneaux côte à côte, façon Total Commander. |
+| **Backend optionnel** | Moteur de compression ou d'aperçu installé et activé explicitement par l'utilisateur. |
+
+---
+
+## 15. Utilisation avec Claude Code
+
+### 15.1 Fichier `CLAUDE.md` à la racine du dépôt (à créer en Tranche 0)
+
+Ce fichier donne les règles permanentes à l'agent. Contenu minimal recommandé :
+
+```markdown
+# CLAUDE.md — Règles pour l'agent
+
+## Contexte
+- Projet : Ferrix Explorer, explorateur Windows 10/11 en Rust.
+- Source de vérité : docs/PRD.md (ce document) et docs/adr/.
+
+## Règles de travail
+1. Toujours lire le PRD et la tranche en cours avant de coder.
+2. Proposer d'abord la structure des fichiers et modules, puis attendre validation si le changement est structurant.
+3. Une tranche = une branche. Ne jamais implémenter une fonctionnalité d'une tranche ultérieure.
+4. Aucune dépendance ajoutée sans vérifier sa licence et mettre à jour docs/LEGAL.md.
+5. Aucun backend non permissif activé par défaut.
+6. Tout `unsafe` a un commentaire // SAFETY: et un test.
+7. Le COM et le code Win32 bas niveau restent dans fx-shell, fx-terminal, fx-a11y.
+8. fx-core ne dépend jamais de fx-ui.
+9. Aucun I/O bloquant sur le thread UI.
+10. Chaque contrôle UI a un nom et un rôle accessibles.
+11. Exécuter cargo fmt, cargo clippy -D warnings et cargo test avant chaque commit.
+12. Commits au format Conventional Commits.
+```
+
+### 15.2 Prompt type par tranche
+
+```
+Voici le PRD complet (docs/PRD.md) et le fichier CLAUDE.md du projet.
+Nous sommes à la Tranche X : [nom de la tranche].
+
+Étapes attendues :
+1. Résume les objectifs et critères d'acceptation de la tranche.
+2. Liste les fonctionnalités du backlog concernées (identifiants NAV-, OPS-, etc.).
+3. Propose la structure des fichiers et modules à créer ou modifier, et les dépendances à ajouter avec leur licence.
+4. Attends ma validation.
+5. Implémente étape par étape, avec tests unitaires au fur et à mesure.
+6. En fin de tranche, vérifie chaque critère d'acceptation et la checklist de la Definition of Done (section 13.1), puis indique ce qui reste à tester manuellement.
+```
+
+### 15.3 Prompts de démarrage recommandés
+
+- **Tranche 0** : « Crée le workspace multi-crates de la section 7.1, configure la CI et ouvre une fenêtre Slint vide avec un élément racine UI Automation. Ne traite pas encore la décision UI : prépare seulement les deux prototypes minimaux (Slint et iced) pour comparaison. »
+- **Tranche 1** : « Implémente le listing asynchrone dans fx-core et la vue liste virtualisée dans fx-ui. Objectif : 50 000 entrées fluides. Ajoute les tests et un benchmark dans tests/. »
+
+---
+
+## Annexe A — Synthèse des priorités
+
+| Priorité | Nombre de fonctionnalités (indicatif) | Périmètre |
+|---|---|---|
+| **MVP** | Majorité de NAV, SID (hors cloud), OPS (hors v2), PRV, PWR, UX, A11Y | Release 1.0 (tranches 0 à 10, 17, 18) |
+| **v1.5** | Cloud, outils avancés, Git, Jump Lists, SMB | Tranches 11 à 14 |
+| **v2** | Plugins WASM, Rhai, diff, smart folders, FTP/SFTP, ACL, versions | Tranche 16 |
+| **Community** | Règles automatiques, vim-like, packs d'icônes, fichiers hors ligne | Tickets ouverts |
+
+---
+
+## Historique du document
+
+| Version | Changements |
+|---|---|
+| 1.0 | Première version (vision, stack, roadmap initiale) |
+| 2.0 | Ajout de la matrice impact/effort, du moteur Quick Look et des backends optionnels, de l'accessibilité anticipée, des fonctionnalités power-user ; objectifs de performance mesurables ; décisions légales (Slint, LZTurbo, UnRAR) ; backlog identifié ; critères d'acceptation détaillés ; conventions et prompts Claude Code |
+
+---
+
+Quelques points à garder en tête avant de lancer le projet :
+
+- **La licence de Slint est la décision la plus structurante.** Elle conditionne la licence du projet, donc il vaut mieux la trancher en Tranche 0, avant d'écrire la moindre ligne d'UI.
+- **J'ai remplacé « 1000x plus rapide » par des cibles chiffrées** (section 3.2). C'est plus défendable publiquement, et chaque cible se mesure contre `explorer.exe`.
+- **Les dépendances à vérifier avant d'écrire du code** : le crate RAW (maintenance), la licence exacte de chaque crate au moment du choix, et l'état actuel des APIs Google Drive et Dropbox côté client local.

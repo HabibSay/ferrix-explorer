@@ -1,0 +1,62 @@
+import { Button, HorizontalBox, LineEdit, ListView, VerticalBox } from "std-widgets.slint";
+import { Strings } from "../../../resources/en-US.slint";
+
+export component MainWindow inherits Window {
+    title: "Ferrix Explorer — Slint spike";
+    width: 1000px;
+    height: 700px;
+    background: #f4f4f4;
+
+    in-out property <string> filter-text: "";
+    in property <[string]> rows;
+    callback filter-changed(string);
+
+    VerticalBox {
+        padding: 12px;
+        spacing: 8px;
+
+        Text {
+            text: Strings.slint-title;
+            font-size: 20px;
+        }
+
+        HorizontalBox {
+            accessible-role: search;
+            spacing: 8px;
+            LineEdit {
+                placeholder-text: Strings.filter-placeholder;
+                text <=> root.filter-text;
+                edited(text) => { root.filter-changed(text); }
+            }
+            Button {
+                text: Strings.clear-filter;
+                clicked => { root.filter-text = ""; root.filter-changed(""); }
+            }
+        }
+
+        ListView {
+            accessible-role: list;
+            accessible-item-count: root.rows.length;
+            vertical-stretch: 1;
+
+            for row[index] in root.rows: HorizontalLayout {
+                height: 28px;
+                padding-left: 8px;
+                accessible-role: list-item;
+                accessible-item-selectable: true;
+                accessible-item-index: index;
+
+                Text {
+                    text: row;
+                    vertical-alignment: center;
+                    horizontal-alignment: left;
+                }
+            }
+        }
+
+        Text {
+            text: Strings.list-help;
+            color: #505050;
+        }
+    }
+}

@@ -1,0 +1,2371 @@
+# PRD — Ferrix Explorer
+
+> Explorateur de fichiers open source, natif, rapide et extensible pour Windows 10 et Windows 11, développé principalement en Rust.
+
+---
+
+## 0. Informations du document
+
+| Champ | Valeur |
+|---|---|
+| Nom provisoire | **Ferrix Explorer** |
+| Type de produit | Application desktop native Windows |
+| Plateformes ciblées | Windows 10 22H2 et Windows 11 |
+| Langage principal | Rust |
+| Licence du projet | Double licence **MIT OR Apache-2.0** |
+| Distribution | MSI, MSIX et version portable |
+| Dépôt | Monorepo Cargo multi-crates |
+| État | PRD initial — à valider |
+| Recherche par IA | **Hors périmètre** |
+| Remplacement complet du shell Windows | **Hors périmètre initial** |
+
+---
+
+# 1. Résumé exécutif
+
+Ferrix Explorer est une alternative open source à l’Explorateur de fichiers Windows.
+
+L’objectif est de proposer une application :
+
+- rapide au démarrage ;
+- fluide dans les dossiers contenant un très grand nombre de fichiers ;
+- réactive pendant les opérations longues ;
+- compatible avec les comportements Windows habituels ;
+- intégrée au Shell Windows ;
+- dotée d’une recherche globale instantanée ;
+- adaptée aux utilisateurs classiques comme aux utilisateurs avancés ;
+- accessible au clavier et avec les lecteurs d’écran ;
+- extensible sans compromettre la stabilité ou la sécurité ;
+- respectueuse de la vie privée.
+
+L’application doit couvrir les usages principaux de l’Explorateur Windows :
+
+- navigation dans les dossiers ;
+- affichage en liste, détails, grille et grandes icônes ;
+- opérations de copie, déplacement, suppression et renommage ;
+- menu contextuel Windows ;
+- miniatures et aperçus ;
+- onglets et fenêtres multiples ;
+- sidebar ;
+- volumes locaux, réseau, WSL et espaces cloud ;
+- recherche globale ;
+- raccourcis clavier ;
+- drag-and-drop ;
+- propriétés et métadonnées ;
+- corbeille ;
+- archives ;
+- terminal intégré ;
+- fonctionnalités avancées de gestion des fichiers.
+
+Le projet adopte une stratégie **Rust-first** : toute la logique métier est développée en Rust. Certaines fonctionnalités nécessiteront néanmoins des API système Windows, COM, des DLL système ou des bibliothèques tierces optionnelles. L’objectif n’est donc pas de garantir qu’aucun code natif externe ne soit chargé, mais que le code propriétaire du projet soit écrit en Rust et que les dépendances soient isolées, auditées et documentées.
+
+---
+
+# 2. Vision produit
+
+> Construire l’explorateur de fichiers Windows open source le plus rapide, le plus fluide et le plus productif, sans sacrifier la compatibilité avec le Shell Windows, l’accessibilité ou la sécurité des données.
+
+Ferrix Explorer doit donner une raison concrète de quitter l’Explorateur Windows grâce à :
+
+1. une navigation très fluide ;
+2. une recherche globale instantanée ;
+3. des onglets et panneaux avancés ;
+4. un aperçu rapide avec la barre d’espace ;
+5. une palette de commandes ;
+6. un terminal intégré ;
+7. une gestion robuste des opérations ;
+8. un mode dual-pane ;
+9. des outils d’analyse et d’organisation ;
+10. une architecture ouverte aux contributions.
+
+L’objectif « 1000 fois plus rapide » est une ambition marketing, et non un critère technique littéral. Toute affirmation de performance devra reposer sur des benchmarks reproductibles.
+
+---
+
+# 3. Principes directeurs
+
+## 3.1 Performance mesurable
+
+- Ne jamais bloquer le thread UI avec une opération disque, réseau ou Shell.
+- Virtualiser toutes les longues listes.
+- Charger les miniatures uniquement lorsqu’elles sont visibles ou bientôt visibles.
+- Annuler les tâches devenues inutiles après un changement de dossier.
+- Utiliser des caches limités par une politique LRU et un budget mémoire.
+- Mesurer avant d’optimiser.
+- Publier les scénarios et résultats de benchmarks.
+
+## 3.2 Sécurité des données
+
+- Ne jamais considérer une opération réussie avant confirmation du système.
+- Préférer la Corbeille à la suppression définitive.
+- Exiger une confirmation explicite pour les actions destructrices.
+- Ne jamais suivre silencieusement des liens ou reparse points dangereux pendant une opération récursive.
+- Prévoir la reprise, l’annulation et le reporting détaillé des erreurs.
+- Ne jamais journaliser les contenus de fichiers, tokens ou chemins sensibles sans consentement.
+
+## 3.3 Intégration Windows
+
+- Utiliser les API Windows officielles quand elles apportent une meilleure compatibilité :
+  - Windows Shell ;
+  - COM ;
+  - `IFileOperation` ;
+  - `IContextMenu` ;
+  - OLE Drag-and-Drop ;
+  - Known Folders ;
+  - Media Foundation ;
+  - DirectWrite ;
+  - UI Automation ;
+  - Cloud Files API ;
+  - USN Journal ;
+  - Windows Search en fallback éventuel.
+- Fournir un fallback lorsque l’API native est indisponible ou instable.
+
+## 3.4 Accessibilité dès la conception
+
+- Navigation complète au clavier.
+- Focus visible.
+- Noms, rôles et états accessibles.
+- Compatibilité Narrator et UI Automation.
+- Contraste élevé.
+- Respect des paramètres d’animation de Windows.
+- Ne pas reporter l’accessibilité à la fin du projet.
+
+## 3.5 Open source et licences maîtrisées
+
+- Le build par défaut doit utiliser uniquement des composants dont la redistribution est compatible avec la licence du projet.
+- Toute dépendance restrictive doit être :
+  - optionnelle ;
+  - désactivée par défaut ;
+  - isolée ;
+  - documentée ;
+  - acceptée explicitement par l’utilisateur ou le distributeur.
+- Un inventaire SBOM doit être produit pour chaque release.
+
+---
+
+# 4. Objectifs
+
+## 4.1 Objectifs produit
+
+- Remplacer l’Explorateur Windows pour les opérations quotidiennes.
+- Proposer une expérience moderne sans rompre les conventions Windows.
+- Atteindre une excellente fluidité sur des dossiers de 100 000 éléments.
+- Fournir une recherche globale rapide sur plusieurs millions de fichiers.
+- Faciliter les workflows avancés sans complexifier l’interface par défaut.
+- Préserver les sessions, onglets et opérations après un crash.
+- Permettre une utilisation locale sans compte et sans télémétrie obligatoire.
+
+## 4.2 Objectifs techniques
+
+- Architecture multi-crates modulaire.
+- Séparation stricte entre UI, domaine, accès système et infrastructure.
+- Modèle asynchrone avec annulation.
+- Couverture de tests élevée sur la logique critique.
+- Interop Windows confinée dans des crates dédiées.
+- Benchmarks reproductibles.
+- Packaging installable et portable.
+- Compatibilité x64 en priorité ; ARM64 ensuite.
+
+---
+
+# 5. Non-objectifs
+
+Les éléments suivants ne font pas partie de la première version :
+
+- remplacement du processus `explorer.exe` comme shell Windows complet ;
+- remplacement de la barre des tâches ou du bureau ;
+- modification non supportée du registre pour intercepter toutes les ouvertures de dossiers ;
+- synchronisation cloud réimplémentée de zéro ;
+- recherche sémantique ou fonctionnalités reposant sur l’IA ;
+- édition avancée d’images, vidéos, PDF ou documents Office ;
+- support natif Linux et macOS ;
+- garantie de compatibilité avec toutes les extensions Shell tierces ;
+- inclusion par défaut de codecs ou moteurs dont la licence est incompatible ;
+- promesse absolue de performance du type « 1000x » sans mesure.
+
+Ferrix Explorer pourra proposer une intégration comme gestionnaire de fichiers préféré lorsque Windows fournit une méthode documentée. Il ne devra pas dépendre de hacks fragiles pour remplacer l’Explorateur système.
+
+---
+
+# 6. Utilisateurs cibles
+
+## 6.1 Utilisateur standard
+
+Besoins :
+
+- retrouver ses documents ;
+- copier, déplacer, supprimer ou renommer ;
+- naviguer dans Téléchargements, Documents et Images ;
+- accéder à OneDrive ;
+- obtenir une interface familière.
+
+## 6.2 Power user
+
+Besoins :
+
+- onglets ;
+- dual-pane ;
+- renommage par lot ;
+- recherche avancée ;
+- archives ;
+- checksums ;
+- comparaison de dossiers ;
+- opérations en file d’attente ;
+- raccourcis personnalisés.
+
+## 6.3 Développeur
+
+Besoins :
+
+- terminal intégré ;
+- support Git ;
+- support WSL ;
+- CLI ;
+- chemins longs ;
+- affichage des fichiers cachés ;
+- accès rapide à PowerShell, CMD et Windows Terminal ;
+- navigation rapide dans de grands dépôts.
+
+## 6.4 Administrateur système
+
+Besoins :
+
+- SMB et lecteurs réseau ;
+- permissions NTFS ;
+- élévation ponctuelle ;
+- checksums ;
+- volumes amovibles ;
+- logs techniques ;
+- opérations robustes.
+
+## 6.5 Utilisateur nécessitant des fonctions d’accessibilité
+
+Besoins :
+
+- lecteur d’écran ;
+- navigation 100 % clavier ;
+- contraste élevé ;
+- focus prévisible ;
+- annonces des opérations ;
+- interface utilisable sans drag-and-drop.
+
+---
+
+# 7. Priorisation Impact/Effort
+
+Échelle :
+
+- Impact : 1 faible, 5 critique.
+- Effort : 1 faible, 5 très important.
+- MVP : requis pour la première version publique stable.
+- v1.5 : extension prioritaire après le MVP.
+- v2 : chantier avancé.
+- Community : contribution communautaire possible.
+
+## 7.1 Fonctionnalités différenciantes
+
+| Fonctionnalité | Impact | Effort | Cible |
+|---|---:|---:|---|
+| Palette de commandes | 5 | 2 | MVP |
+| Quick Look avec barre d’espace | 5 | 4 | MVP |
+| Terminal intégré avec ConPTY | 4 | 3 | MVP |
+| CLI compagnon | 4 | 2 | MVP |
+| Dual-pane | 4 | 3 | MVP |
+| Support WSL | 3 | 2 | MVP |
+| Badges Git | 4 | 3 | v1.5 |
+| Workspaces sauvegardés | 3 | 2 | MVP |
+| Plugins WASM | 5 | 5 | v2 |
+
+## 7.2 Gestion avancée des fichiers
+
+| Fonctionnalité | Impact | Effort | Cible |
+|---|---:|---:|---|
+| Chemins longs | 4 | 2 | MVP |
+| Renommage par lot | 4 | 2 | MVP |
+| Checksums | 3 | 1 | MVP |
+| Filtre instantané du dossier | 4 | 2 | MVP |
+| File d’opérations | 4 | 3 | MVP |
+| Vérification après copie | 3 | 2 | v1.5 |
+| Détecteur de doublons | 4 | 3 | v1.5 |
+| Navigation dans les archives | 4 | 3 | v1.5 |
+| Treemap d’utilisation disque | 4 | 3 | v1.5 |
+| Comparaison de dossiers | 3 | 3 | v2 |
+| Reprise de transferts interrompus | 3 | 4 | v2 |
+| Suppression sécurisée | 2 | 3 | v2 |
+
+## 7.3 Windows, accessibilité et stabilité
+
+| Fonctionnalité | Impact | Effort | Cible |
+|---|---:|---:|---|
+| Navigation complète au clavier | 5 | 3 | MVP |
+| UI Automation | 5 | 4 | MVP |
+| Contraste élevé | 4 | 2 | MVP |
+| Restauration après crash | 4 | 2 | MVP |
+| Mica/effets Windows 11 | 3 | 2 | MVP |
+| Snap Layouts | 3 | 2 | MVP |
+| Mode portable | 3 | 1 | MVP |
+| Jump Lists | 3 | 2 | v1.5 |
+| Élévation UAC ponctuelle | 4 | 4 | v1.5 |
+| Éditeur ACL simplifié | 2 | 4 | v2 |
+
+---
+
+# 8. Exigences fonctionnelles
+
+## 8.1 Navigation
+
+L’application doit permettre :
+
+- la navigation dans les fichiers et dossiers locaux ;
+- la navigation dans les partages UNC ;
+- la navigation dans les lecteurs réseau mappés ;
+- la navigation dans les emplacements WSL ;
+- la saisie directe d’un chemin ;
+- l’utilisation des chemins Windows longs ;
+- le retour au dossier précédent ;
+- le passage au dossier suivant ;
+- la remontée vers le dossier parent ;
+- l’actualisation du dossier ;
+- l’ouverture de plusieurs fenêtres ;
+- l’ouverture de plusieurs onglets ;
+- le déplacement et détachement des onglets ;
+- la restauration des onglets ;
+- l’ouverture d’un dossier dans un nouvel onglet, une nouvelle fenêtre ou l’autre panneau.
+
+### Breadcrumb
+
+Le breadcrumb doit :
+
+- afficher chaque segment du chemin ;
+- permettre de cliquer sur un segment ;
+- afficher les sous-dossiers d’un segment ;
+- pouvoir être remplacé temporairement par une barre d’adresse éditable ;
+- accepter les chemins locaux, UNC, URI compatibles et chemins WSL.
+
+### Historique
+
+Chaque panneau doit disposer de son propre historique :
+
+- précédent ;
+- suivant ;
+- dossier parent ;
+- position de scroll ;
+- sélection courante lorsque possible.
+
+---
+
+## 8.2 Modes d’affichage
+
+Modes requis :
+
+- liste ;
+- détails ;
+- petites icônes ;
+- icônes moyennes ;
+- grandes icônes ;
+- très grandes icônes ;
+- mosaïque ;
+- contenu.
+
+Fonctions associées :
+
+- zoom avec `Ctrl + molette` ;
+- mémorisation du mode d’affichage par dossier ou type de dossier ;
+- colonnes redimensionnables ;
+- colonnes réordonnables ;
+- tri ascendant et descendant ;
+- tri multi-critères ;
+- groupement ;
+- affichage ou masquage des fichiers cachés ;
+- affichage ou masquage des fichiers système ;
+- affichage des extensions ;
+- affichage des cases de sélection en option.
+
+La liste doit être virtualisée et ne créer que les composants visibles.
+
+---
+
+## 8.3 Sélection
+
+L’application doit prendre en charge :
+
+- clic simple ;
+- double-clic ;
+- `Ctrl + clic` ;
+- `Shift + clic` ;
+- `Ctrl + A` ;
+- sélection rectangulaire ;
+- sélection au clavier ;
+- inversion de sélection ;
+- sélection par motif ;
+- conservation raisonnable de la sélection après actualisation ;
+- annonce accessible du nombre d’éléments sélectionnés.
+
+---
+
+## 8.4 Opérations sur les fichiers
+
+Fonctions requises :
+
+- copier ;
+- couper ;
+- coller ;
+- déplacer ;
+- supprimer vers la Corbeille ;
+- supprimer définitivement ;
+- renommer ;
+- créer un dossier ;
+- créer un fichier ;
+- créer un raccourci ;
+- ouvrir ;
+- ouvrir avec ;
+- afficher les propriétés ;
+- dupliquer ;
+- envoyer vers ;
+- compresser ;
+- extraire ;
+- calculer un checksum ;
+- copier le chemin ;
+- copier le nom ;
+- ouvrir un terminal à cet emplacement.
+
+### File d’opérations
+
+Toutes les opérations longues doivent apparaître dans un centre d’activité :
+
+- progression globale ;
+- progression par fichier ;
+- vitesse instantanée ;
+- vitesse moyenne ;
+- temps estimé ;
+- fichier en cours ;
+- pause ;
+- reprise ;
+- annulation ;
+- nouvelle tentative ;
+- affichage des erreurs ;
+- possibilité de réduire le centre d’activité.
+
+### Conflits
+
+En cas de conflit :
+
+- remplacer ;
+- ignorer ;
+- conserver les deux ;
+- comparer les métadonnées ;
+- appliquer la décision à tous les conflits similaires ;
+- annuler l’opération.
+
+### Undo/Redo
+
+Les opérations réversibles doivent être historisées :
+
+- renommage ;
+- déplacement ;
+- création de dossier ;
+- mise à la Corbeille ;
+- tags ;
+- épingles.
+
+L’interface ne doit pas prétendre qu’une opération est réversible lorsqu’elle ne l’est pas.
+
+---
+
+## 8.5 Renommage par lot
+
+Le renommage par lot doit proposer :
+
+- prévisualisation avant application ;
+- recherche/remplacement ;
+- expressions régulières ;
+- numérotation ;
+- changement de casse ;
+- ajout d’un préfixe ou suffixe ;
+- utilisation de la date ;
+- utilisation de métadonnées EXIF ;
+- nettoyage des caractères invalides ;
+- détection des collisions ;
+- annulation de toute l’opération lorsque possible.
+
+---
+
+## 8.6 Sidebar
+
+Sections attendues :
+
+- Accueil ;
+- Épinglés ;
+- Récents ;
+- Téléchargements ;
+- Documents ;
+- Images ;
+- Musique ;
+- Vidéos ;
+- Bureau ;
+- Ce PC ;
+- volumes locaux ;
+- volumes amovibles ;
+- lecteurs réseau ;
+- Réseau ;
+- WSL ;
+- comptes cloud ;
+- tags ;
+- recherches sauvegardées ;
+- workspaces.
+
+La sidebar doit permettre :
+
+- épingler et désépingler ;
+- réordonner les favoris ;
+- renommer un favori sans renommer le dossier réel ;
+- réduire ou développer une section ;
+- afficher l’espace utilisé pour les volumes ;
+- afficher l’état des emplacements indisponibles ;
+- conserver la configuration entre les sessions.
+
+---
+
+## 8.7 Onglets, fenêtres et dual-pane
+
+### Onglets
+
+Fonctions requises :
+
+- nouvel onglet ;
+- fermer ;
+- rouvrir l’onglet fermé ;
+- dupliquer ;
+- épingler ;
+- réordonner ;
+- détacher ;
+- déplacer vers une autre fenêtre ;
+- fermer les autres ;
+- fermer à droite ;
+- restaurer la session.
+
+### Dual-pane
+
+Le mode dual-pane doit proposer :
+
+- deux panneaux indépendants ;
+- un onglet ou groupe d’onglets par panneau ;
+- copie rapide vers l’autre panneau ;
+- déplacement rapide vers l’autre panneau ;
+- échange des panneaux ;
+- synchronisation optionnelle de la navigation ;
+- comparaison visuelle ;
+- focus clairement identifiable ;
+- raccourcis inspirés des gestionnaires de fichiers Commander.
+
+### Workspaces
+
+Un workspace doit sauvegarder :
+
+- les fenêtres ;
+- les onglets ;
+- les chemins ;
+- la disposition dual-pane ;
+- les tailles de panneaux ;
+- le terminal associé ;
+- les filtres et recherches ;
+- le moniteur et la position de fenêtre, si encore disponibles.
+
+---
+
+## 8.8 Menu contextuel Windows
+
+Ferrix Explorer doit intégrer les commandes du Shell Windows lorsque cela est techniquement sûr.
+
+Fonctions :
+
+- menu contextuel sur un fichier ;
+- menu contextuel sur plusieurs fichiers ;
+- menu contextuel du fond de dossier ;
+- verbes Shell ;
+- sous-menus ;
+- extensions tierces ;
+- commandes personnalisées Ferrix ;
+- support clavier de la touche Menu et de `Shift + F10`.
+
+### Isolation et stabilité
+
+Les extensions Shell tierces peuvent être lentes ou instables. L’architecture doit donc prévoir :
+
+- mesure du temps d’ouverture ;
+- timeout ;
+- journalisation technique ;
+- liste de blocage locale ;
+- possibilité de désactiver une extension ;
+- processus auxiliaire si l’isolation hors processus est réalisable ;
+- fallback vers un menu Ferrix minimal.
+
+La parité exacte avec les menus de Windows 10 et Windows 11 n’est pas garantie, car Microsoft utilise des interfaces et comportements dont certains ne sont pas exposés de manière uniforme aux applications tierces.
+
+---
+
+## 8.9 Drag-and-drop
+
+Le drag-and-drop doit fonctionner :
+
+- entre dossiers Ferrix ;
+- entre panneaux ;
+- entre fenêtres ;
+- depuis Ferrix vers l’Explorateur Windows ;
+- depuis l’Explorateur Windows vers Ferrix ;
+- vers et depuis les applications compatibles OLE ;
+- vers la sidebar ;
+- vers les onglets ;
+- avec les modificateurs copie/déplacement/raccourci.
+
+Une alternative clavier doit exister pour chaque action essentielle.
+
+---
+
+## 8.10 Recherche et indexation
+
+### Recherche dans le dossier courant
+
+- recherche sans index obligatoire ;
+- filtre instantané par nom ;
+- filtre sur extension, taille et date ;
+- recherche récursive optionnelle ;
+- annulation immédiate.
+
+### Recherche globale
+
+L’index global doit contenir au minimum :
+
+- nom ;
+- chemin ;
+- extension ;
+- taille ;
+- dates ;
+- identifiant de volume ;
+- identifiant de fichier lorsque disponible ;
+- attributs ;
+- type de fichier.
+
+### Syntaxe de recherche
+
+Exemples :
+
+- `name:rapport`
+- `ext:pdf`
+- `size:>100MB`
+- `modified:this-week`
+- `path:C:\Projects`
+- `kind:image`
+- `is:hidden`
+- `is:directory`
+
+### Indexation
+
+Stratégie :
+
+1. lecture de l’USN Journal sur les volumes NTFS lorsque possible ;
+2. parcours classique en fallback ;
+3. écoute des changements USN et filesystem ;
+4. réconciliation périodique ;
+5. mise à jour transactionnelle de l’index ;
+6. exclusion configurable de chemins ;
+7. limitation des ressources en arrière-plan.
+
+L’indexation ne doit pas exiger une élévation permanente. Si les privilèges nécessaires ne sont pas disponibles, l’application doit fonctionner avec un mode dégradé.
+
+### Recherche de contenu
+
+Optionnelle et désactivable :
+
+- texte brut ;
+- code source ;
+- PDF lorsque l’extraction est disponible ;
+- documents Office via extracteur autorisé ;
+- taille maximale configurable ;
+- exclusions par type ou emplacement ;
+- aucun envoi vers un service distant.
+
+La recherche IA ou sémantique est explicitement hors périmètre.
+
+---
+
+# 9. Quick Look et moteur de prévisualisation
+
+## 9.1 Objectif
+
+L’appui sur la barre d’espace doit ouvrir ou fermer un aperçu rapide du fichier sélectionné sans lancer l’application associée.
+
+L’aperçu doit être :
+
+- asynchrone ;
+- annulable ;
+- sandboxé ou isolé pour les formats à risque ;
+- limité en mémoire ;
+- capable d’afficher un état de chargement ;
+- capable de basculer rapidement entre les fichiers avec les flèches.
+
+## 9.2 Types supportés
+
+Priorité MVP :
+
+- images ;
+- GIF et images animées ;
+- PDF ;
+- texte ;
+- Markdown ;
+- code source ;
+- JSON, XML, YAML, TOML ;
+- audio ;
+- vidéo ;
+- polices ;
+- archives ;
+- métadonnées générales ;
+- documents Office via Preview Handlers Windows lorsque disponibles.
+
+v1.5 :
+
+- RAW photo ;
+- SVG avec politique de sécurité ;
+- modèles 3D courants ;
+- e-books ;
+- aperçus enrichis Office ;
+- hex viewer pour fichiers binaires.
+
+## 9.3 Architecture
+
+```rust
+pub trait PreviewProvider: Send + Sync {
+    fn id(&self) -> &'static str;
+    fn supports(&self, input: &PreviewInput) -> SupportLevel;
+    fn preview(
+        &self,
+        input: PreviewInput,
+        context: PreviewContext,
+        cancel: CancellationToken,
+    ) -> PreviewFuture;
+}
+```
+
+Chaque provider doit déclarer :
+
+- les extensions supportées ;
+- la détection MIME ou signature ;
+- sa priorité ;
+- ses limites ;
+- son niveau de confiance ;
+- son besoin éventuel d’isolation ;
+- sa licence et ses dépendances.
+
+## 9.4 Providers recommandés
+
+| Type | Backend recommandé | Fallback |
+|---|---|---|
+| JPEG/PNG/WebP | Bibliothèques Rust optimisées et SIMD | Windows Imaging Component |
+| JPEG haute performance | libjpeg-turbo optionnel | Décodeur Rust |
+| Redimensionnement | `fast_image_resize` ou équivalent | WIC |
+| PDF | PDFium isolé si redistribution validée | Shell Preview Handler |
+| Vidéo | Windows Media Foundation | FFmpeg optionnel |
+| Audio | Media Foundation ou `symphonia` | Shell Handler |
+| Texte/code | Détection d’encodage + coloration syntaxique | Texte brut |
+| Polices | DirectWrite | Shell Handler |
+| Office | Shell Preview Handlers | Métadonnées uniquement |
+| Archives | Providers par format | Shell Handler |
+
+Les bibliothèques exactes doivent être validées par un ADR portant sur :
+
+- licence ;
+- sécurité ;
+- maintenance ;
+- performance ;
+- compatibilité ARM64 ;
+- coût de distribution ;
+- historique de vulnérabilités.
+
+---
+
+# 10. Compression, décompression et archives
+
+## 10.1 Principe
+
+Il n’existe pas un décompresseur unique optimal pour tous les formats. Chaque archive impose son format et son algorithme.
+
+Ferrix doit donc utiliser un registre de codecs et sélectionner le backend le plus rapide et compatible pour le format rencontré.
+
+```rust
+pub trait ArchiveBackend: Send + Sync {
+    fn id(&self) -> &'static str;
+    fn probe(&self, source: &ArchiveSource) -> ProbeResult;
+    fn list(&self, source: &ArchiveSource) -> Result<Vec<ArchiveEntry>>;
+    fn extract(
+        &self,
+        source: &ArchiveSource,
+        destination: &Path,
+        options: ExtractOptions,
+        cancel: CancellationToken,
+    ) -> Result<ExtractReport>;
+}
+```
+
+## 10.2 Formats cibles
+
+MVP :
+
+- ZIP ;
+- TAR ;
+- GZIP ;
+- BZIP2 ;
+- XZ ;
+- Zstandard.
+
+v1.5 :
+
+- 7z ;
+- RAR en lecture/extraction si la licence le permet ;
+- ZIP chiffré ;
+- archives multi-volumes.
+
+## 10.3 Backends
+
+| Format | Backend par défaut envisagé | Alternative |
+|---|---|---|
+| ZIP/Deflate | `libdeflate` ou backend Rust performant | Backend Windows |
+| Zstandard | `zstd` | Implémentation Rust validée |
+| 7z | `sevenz-rust` après audit | SDK 7-Zip optionnel |
+| RAR | Backend optionnel après audit de licence | Association externe |
+| TAR/GZIP/XZ/BZIP2 | Crates Rust maintenues | Outil externe configuré |
+
+## 10.4 LZTurbo
+
+LZTurbo/PowTurbo doit être considéré comme un backend expérimental optionnel, sous réserve :
+
+- de vérifier sa licence actuelle à la date d’intégration ;
+- de vérifier les droits de redistribution ;
+- de vérifier l’usage commercial ;
+- de vérifier la disponibilité des sources ;
+- de vérifier la compatibilité Windows x64/ARM64 ;
+- de comparer ses performances sur des scénarios réels ;
+- de réaliser un audit de sécurité.
+
+Si sa licence n’est pas compatible avec le projet :
+
+- il ne doit pas être inclus dans le build officiel ;
+- il ne doit pas être téléchargé automatiquement ;
+- il peut être pris en charge par un adaptateur externe explicitement installé par l’utilisateur ;
+- son statut doit être documenté dans `docs/LEGAL.md`.
+
+La même politique s’applique à tout codec propriétaire ou à licence restrictive.
+
+## 10.5 Sécurité des archives
+
+Le moteur doit protéger contre :
+
+- Zip Slip et traversée de chemin ;
+- chemins absolus ;
+- liens symboliques dangereux ;
+- bombes de décompression ;
+- tailles déclarées mensongères ;
+- archives récursives ;
+- consommation excessive de mémoire ;
+- noms invalides sous Windows ;
+- écrasement silencieux ;
+- fichiers spéciaux.
+
+Avant extraction, l’interface doit pouvoir afficher :
+
+- taille compressée ;
+- taille estimée après extraction ;
+- nombre de fichiers ;
+- avertissement de ratio suspect ;
+- espace disque nécessaire.
+
+---
+
+# 11. Palette de commandes
+
+Raccourci par défaut : `Ctrl + Shift + P`.
+
+La palette doit permettre :
+
+- rechercher une commande ;
+- ouvrir un dossier récent ;
+- changer de vue ;
+- basculer le thème ;
+- ouvrir un terminal ;
+- calculer un checksum ;
+- lancer un renommage par lot ;
+- gérer les onglets ;
+- exécuter une action de plugin ;
+- afficher le raccourci associé ;
+- exécuter sans souris.
+
+La liste des commandes doit provenir d’un registre central partagé avec les menus et raccourcis.
+
+---
+
+# 12. Terminal intégré
+
+Le terminal doit utiliser ConPTY lorsque disponible.
+
+Fonctions :
+
+- PowerShell ;
+- CMD ;
+- Windows Terminal externe ;
+- profils WSL ;
+- shell personnalisé ;
+- ouverture dans le dossier courant ;
+- panneau inférieur détachable ;
+- plusieurs sessions ;
+- redimensionnement ;
+- copier/coller ;
+- couleurs ANSI ;
+- liens cliquables ;
+- recherche ;
+- raccourcis configurables.
+
+Le terminal ne doit pas transmettre automatiquement de commandes à un shell élevé.
+
+---
+
+# 13. CLI compagnon
+
+Binaire : `fx`.
+
+Exemples :
+
+```powershell
+fx .
+fx open C:\Projects
+fx search "ext:rs path:C:\Projects"
+fx workspace open development
+fx checksum SHA256 .\archive.zip
+fx reveal .\target\release\app.exe
+```
+
+Le CLI doit :
+
+- communiquer avec une instance existante lorsque possible ;
+- démarrer Ferrix si nécessaire ;
+- retourner des codes d’erreur documentés ;
+- fournir une sortie lisible et une sortie JSON pour l’automatisation.
+
+---
+
+# 14. Git et développement
+
+Fonctions v1.5 :
+
+- détection des dépôts ;
+- badges ajouté, modifié, supprimé, ignoré et non suivi ;
+- branche courante ;
+- invalidation du cache après modification ;
+- désactivation globale ou par dossier ;
+- limitation du coût sur les monorepos ;
+- respect de `.gitignore`.
+
+Ferrix ne doit pas devenir un client Git complet dans le MVP.
+
+---
+
+# 15. WSL
+
+Fonctions :
+
+- découverte des distributions ;
+- navigation via les chemins WSL exposés par Windows ;
+- ouverture dans un terminal WSL ;
+- copie de chemin Windows ;
+- copie de chemin Linux ;
+- avertissement pour les opérations potentiellement lentes ;
+- gestion correcte de la casse ;
+- affichage des liens symboliques ;
+- pas d’hypothèse NTFS sur les fichiers WSL.
+
+---
+
+# 16. Cloud
+
+## 16.1 Principes
+
+Ferrix ne doit pas réimplémenter la synchronisation OneDrive, Google Drive ou Dropbox lorsqu’un client officiel est installé.
+
+Priorités :
+
+1. détecter les racines locales synchronisées ;
+2. afficher les placeholders ;
+3. afficher les états de disponibilité ;
+4. utiliser les comportements du client officiel ;
+5. demander le téléchargement à la demande via les API documentées ;
+6. proposer une intégration distante optionnelle ultérieure.
+
+## 16.2 Providers
+
+- OneDrive ;
+- OneDrive Entreprise ;
+- Google Drive pour ordinateur ;
+- Dropbox ;
+- providers compatibles Cloud Files API ;
+- autres providers via plugins à terme.
+
+## 16.3 États
+
+- disponible localement ;
+- toujours disponible ;
+- en ligne uniquement ;
+- synchronisation en cours ;
+- erreur ;
+- conflit ;
+- provider déconnecté.
+
+## 16.4 APIs distantes
+
+L’accès direct via Microsoft Graph, Google Drive API ou Dropbox API doit être une fonctionnalité séparée et optionnelle.
+
+Exigences :
+
+- OAuth2 avec navigateur système ;
+- PKCE ;
+- stockage des tokens dans Windows Credential Manager ;
+- permissions minimales ;
+- révocation de session ;
+- aucun secret client embarqué lorsque cela peut être évité ;
+- journalisation sans token.
+
+---
+
+# 17. Réseau
+
+## 17.1 MVP
+
+- chemins UNC ;
+- lecteurs réseau mappés ;
+- reconnexion ;
+- gestion des timeouts ;
+- affichage d’un état hors ligne ;
+- annulation des requêtes lentes.
+
+## 17.2 v1.5/v2
+
+- découverte SMB ;
+- SFTP ;
+- FTP/FTPS ;
+- WebDAV ;
+- profils de connexion ;
+- stockage des secrets dans Windows Credential Manager ;
+- favoris réseau ;
+- limitation du cache local.
+
+Les emplacements réseau ne doivent jamais bloquer l’ouverture de l’application.
+
+---
+
+# 18. Organisation et analyse
+
+## 18.1 Tags
+
+- tags colorés ;
+- tags multiples ;
+- stockage par identifiant stable lorsque possible ;
+- fallback par chemin ;
+- recherche par tag ;
+- export/import.
+
+Les tags ne doivent pas modifier silencieusement le fichier ou les ADS sans option explicite.
+
+## 18.2 Recherches sauvegardées
+
+Une recherche sauvegardée contient :
+
+- la requête ;
+- les emplacements ;
+- les filtres ;
+- le tri ;
+- le mode d’affichage.
+
+## 18.3 Analyse d’espace disque
+
+- treemap ;
+- classement par taille ;
+- regroupement par extension ;
+- scan annulable ;
+- exclusion des liens et reparse points ;
+- indication claire des tailles logiques et physiques ;
+- export du rapport.
+
+## 18.4 Détection des doublons
+
+Étapes :
+
+1. regroupement par taille ;
+2. hash partiel ;
+3. hash complet ;
+4. comparaison finale optionnelle.
+
+Fonctions :
+
+- prévisualisation ;
+- sélection assistée ;
+- liens physiques lorsque cela est pertinent ;
+- déplacement vers la Corbeille ;
+- aucune suppression automatique par défaut.
+
+---
+
+# 19. Propriétés et métadonnées
+
+Afficher :
+
+- nom ;
+- type ;
+- chemin ;
+- taille logique ;
+- taille sur disque ;
+- dates ;
+- attributs ;
+- propriétaire ;
+- permissions ;
+- checksum ;
+- flux alternatifs NTFS ;
+- reparse point ;
+- cible de lien ;
+- informations EXIF ;
+- informations média ;
+- signature numérique ;
+- version du binaire ;
+- état cloud.
+
+Les opérations sensibles sur ACL sont reportées en v2.
+
+---
+
+# 20. Interface et personnalisation
+
+## 20.1 Thèmes
+
+- clair ;
+- sombre ;
+- suivre Windows ;
+- contraste élevé ;
+- couleurs d’accentuation ;
+- réduction des animations ;
+- Mica/Acrylic lorsque disponible ;
+- fallback opaque sur Windows 10 ou matériel incompatible.
+
+## 20.2 Personnalisation
+
+- densité compacte, normale ou confortable ;
+- colonnes ;
+- toolbar ;
+- taille des icônes ;
+- sidebar ;
+- raccourcis ;
+- application terminal ;
+- vue par type de dossier ;
+- ouverture simple ou double-clic ;
+- comportement au démarrage.
+
+## 20.3 Multi-écrans
+
+- restauration sur le bon écran ;
+- gestion du changement de DPI ;
+- mémorisation raisonnable de la position ;
+- retour automatique sur un écran disponible ;
+- support des DPI mixtes.
+
+---
+
+# 21. Accessibilité
+
+Exigences obligatoires :
+
+- UI Automation ;
+- Narrator ;
+- navigation complète au clavier ;
+- ordre de tabulation cohérent ;
+- focus visible ;
+- noms accessibles ;
+- rôles accessibles ;
+- annonce des changements de dossier ;
+- annonce des opérations et erreurs ;
+- contraste élevé ;
+- zoom ;
+- prise en charge des préférences de réduction d’animation ;
+- actions alternatives au drag-and-drop ;
+- raccourcis non exclusivement basés sur la couleur ;
+- vérification avec Accessibility Insights for Windows.
+
+Critères de validation :
+
+- toutes les fonctionnalités MVP sont utilisables sans souris ;
+- Narrator annonce le nom, le type et l’état des éléments ;
+- les dialogues ne piègent pas le focus ;
+- les listes virtualisées restent accessibles ;
+- les tests d’accessibilité sont intégrés à chaque tranche UI.
+
+---
+
+# 22. Raccourcis clavier
+
+Raccourcis minimum :
+
+| Action | Raccourci |
+|---|---|
+| Nouvel onglet | `Ctrl + T` |
+| Fermer l’onglet | `Ctrl + W` |
+| Rouvrir l’onglet | `Ctrl + Shift + T` |
+| Changer d’onglet | `Ctrl + Tab` |
+| Nouvelle fenêtre | `Ctrl + N` |
+| Barre d’adresse | `Ctrl + L` ou `Alt + D` |
+| Recherche | `Ctrl + F` |
+| Palette de commandes | `Ctrl + Shift + P` |
+| Terminal | `Ctrl + `` |
+| Renommer | `F2` |
+| Actualiser | `F5` |
+| Supprimer | `Delete` |
+| Supprimer définitivement | `Shift + Delete` |
+| Propriétés | `Alt + Enter` |
+| Précédent | `Alt + Gauche` |
+| Suivant | `Alt + Droite` |
+| Parent | `Alt + Haut` |
+| Tout sélectionner | `Ctrl + A` |
+| Copier | `Ctrl + C` |
+| Couper | `Ctrl + X` |
+| Coller | `Ctrl + V` |
+| Annuler | `Ctrl + Z` |
+| Aperçu rapide | `Espace` |
+| Menu contextuel | `Shift + F10` |
+
+Les raccourcis doivent être remappables, avec détection des conflits.
+
+Un mode Vim optionnel pourra être ajouté par la communauté.
+
+---
+
+# 23. Architecture technique
+
+## 23.1 Workspace
+
+```text
+ferrix-explorer/
+├── Cargo.toml
+├── rust-toolchain.toml
+├── crates/
+│   ├── fx-domain/          # Entités, règles métier, commandes
+│   ├── fx-fs/              # Accès filesystem et métadonnées
+│   ├── fx-ops/             # File d’opérations, conflits, undo/redo
+│   ├── fx-shell/           # Shell Windows, COM, context menus
+│   ├── fx-index/           # Indexation et requêtes
+│   ├── fx-preview/         # Quick Look et providers
+│   ├── fx-codec/           # Archives et codecs
+│   ├── fx-cloud/           # Providers cloud
+│   ├── fx-network/         # SMB et protocoles distants
+│   ├── fx-terminal/        # ConPTY
+│   ├── fx-git/             # États Git
+│   ├── fx-settings/        # Configuration et migrations
+│   ├── fx-storage/         # SQLite et caches persistants
+│   ├── fx-a11y/            # Abstractions accessibilité
+│   ├── fx-plugin-api/      # API stable pour plugins
+│   ├── fx-plugin-host/     # Runtime WASM
+│   ├── fx-ui/              # Composants et modèles UI
+│   ├── fx-app/             # Application graphique
+│   └── fx-cli/             # CLI compagnon
+├── resources/
+├── benchmarks/
+├── test-data/
+├── installer/
+├── scripts/
+└── docs/
+    ├── ARCHITECTURE.md
+    ├── SECURITY.md
+    ├── PRIVACY.md
+    ├── LEGAL.md
+    ├── BENCHMARKS.md
+    ├── CONTRIBUTING.md
+    └── adr/
+```
+
+## 23.2 Couches
+
+```text
+UI
+ ↓ commandes / événements
+Application
+ ↓ cas d’utilisation
+Domaine
+ ↓ ports/traits
+Infrastructure
+ ├── Filesystem
+ ├── Windows Shell
+ ├── Index
+ ├── SQLite
+ ├── Cloud
+ ├── Réseau
+ └── Codecs
+```
+
+L’UI ne doit pas appeler directement les API Win32 ou COM.
+
+## 23.3 Modèles principaux
+
+```rust
+pub struct FileEntry {
+    pub id: EntryId,
+    pub path: PathBuf,
+    pub display_name: String,
+    pub kind: EntryKind,
+    pub size: Option<u64>,
+    pub modified: Option<SystemTime>,
+    pub attributes: FileAttributes,
+    pub icon_key: IconKey,
+    pub thumbnail_key: Option<ThumbnailKey>,
+    pub cloud_state: Option<CloudState>,
+    pub git_state: Option<GitState>,
+}
+
+pub struct TabState {
+    pub current_location: Location,
+    pub back_history: Vec<NavigationState>,
+    pub forward_history: Vec<NavigationState>,
+    pub view: ViewSettings,
+    pub selection: SelectionState,
+    pub scroll_anchor: Option<EntryId>,
+}
+
+pub enum Location {
+    Local(PathBuf),
+    Unc(String),
+    Wsl { distro: String, path: String },
+    Search(SearchQuery),
+    Archive { archive: PathBuf, inner_path: String },
+    Cloud(CloudLocation),
+    Virtual(VirtualLocation),
+}
+```
+
+## 23.4 Async et annulation
+
+- Runtime Tokio pour les opérations asynchrones.
+- Pools dédiés aux tâches bloquantes.
+- `CancellationToken` pour navigation, recherche et previews.
+- Identifiant de génération pour rejeter les résultats obsolètes.
+- Backpressure sur les canaux.
+- Priorité aux tâches visibles.
+- Aucun `.await` ou appel bloquant non maîtrisé sur le thread UI.
+
+## 23.5 COM
+
+- Initialisation COM explicite par thread.
+- Respect STA/MTA selon l’API.
+- Wrappers RAII.
+- Limitation du code `unsafe`.
+- Documentation de chaque bloc `unsafe`.
+- Tests sur Windows réel.
+- Gestion des objets Shell lents ou défaillants.
+
+---
+
+# 24. Choix de l’interface graphique
+
+Le framework UI ne doit pas être définitivement choisi sans prototype.
+
+Candidats :
+
+- Slint ;
+- WinUI via interop ;
+- `windows-rs` avec Direct2D/DirectComposition ;
+- autre framework Rust maintenu répondant aux critères.
+
+Un spike technique en tranche 0 doit comparer :
+
+- virtualisation de 100 000 éléments ;
+- accessibilité UI Automation ;
+- drag-and-drop OLE ;
+- menus natifs ;
+- rendu DPI ;
+- IME ;
+- multi-fenêtres ;
+- Snap Layouts ;
+- Mica ;
+- latence ;
+- consommation mémoire ;
+- taille du binaire ;
+- licence.
+
+Décision documentée dans un ADR.
+
+Slint peut être utilisé comme candidat initial, mais ne doit être retenu que s’il satisfait les critères d’accessibilité et d’intégration Windows.
+
+---
+
+# 25. Stockage local
+
+SQLite est recommandé pour :
+
+- préférences ;
+- historique ;
+- récents ;
+- épingles ;
+- workspaces ;
+- tags ;
+- état des opérations ;
+- métadonnées du cache ;
+- migrations.
+
+Tantivy ou une solution spécialisée est utilisée pour l’index de recherche.
+
+Exigences :
+
+- transactions ;
+- migrations versionnées ;
+- sauvegarde de sécurité avant migration destructive ;
+- corruption détectable ;
+- reconstruction possible des caches ;
+- séparation des données critiques et reconstructibles.
+
+---
+
+# 26. Performance
+
+## 26.1 Budgets cibles
+
+Les objectifs sont mesurés sur une machine de référence documentée.
+
+| Scénario | Cible |
+|---|---:|
+| Affichage initial de la fenêtre, démarrage chaud | < 200 ms |
+| Démarrage à froid réaliste | < 500 ms |
+| Feedback visuel après navigation | < 50 ms |
+| Premier écran d’un dossier local | < 150 ms |
+| Scroll d’une liste | 60 FPS cible |
+| Résultat de recherche indexée | < 100 ms p95 |
+| Changement d’onglet | < 50 ms |
+| Ouverture Quick Look texte/image simple | < 150 ms |
+| Mémoire au repos | Budget initial < 150 Mo |
+| Dossier de 100 000 éléments | UI interactive pendant le chargement |
+| Index de 1 million d’entrées | Requête interactive sans blocage UI |
+
+Ces valeurs sont des objectifs, pas des garanties contractuelles.
+
+## 26.2 Benchmarks
+
+Scénarios :
+
+- 1 000 fichiers ;
+- 10 000 fichiers ;
+- 100 000 fichiers ;
+- 1 million d’entrées synthétiques ;
+- miniatures d’images ;
+- dossier réseau lent ;
+- lecteur déconnecté ;
+- archive volumineuse ;
+- recherche globale ;
+- copie de petits fichiers ;
+- copie d’un fichier très volumineux.
+
+Comparer lorsque possible :
+
+- Ferrix ;
+- Explorateur Windows ;
+- autres gestionnaires de fichiers populaires.
+
+Les résultats doivent inclure :
+
+- machine ;
+- version Windows ;
+- stockage ;
+- température/cache ;
+- médiane ;
+- p95 ;
+- nombre de répétitions.
+
+---
+
+# 27. Sécurité
+
+## 27.1 Modèle de menace
+
+Risques principaux :
+
+- fichiers malformés ;
+- miniatures hostiles ;
+- archives malveillantes ;
+- extensions Shell instables ;
+- chemins réseau compromis ;
+- plugins non fiables ;
+- tokens cloud ;
+- traversée de répertoires ;
+- reparse points ;
+- élévation de privilèges ;
+- DLL hijacking ;
+- commandes terminal injectées.
+
+## 27.2 Mesures
+
+- parsing hors processus pour les formats à risque lorsque possible ;
+- Job Objects et limites de ressources ;
+- chemins canoniques vérifiés ;
+- politique stricte sur les reparse points ;
+- signature des releases ;
+- dépendances auditées ;
+- `cargo audit` ;
+- SBOM ;
+- secrets dans Windows Credential Manager ;
+- plugins WASM sans accès implicite au filesystem ;
+- permissions explicites par plugin ;
+- protocole IPC versionné ;
+- pas d’auto-update non signé.
+
+## 27.3 Plugins
+
+Chaque plugin doit déclarer ses capacités :
+
+- lire une sélection ;
+- lire un fichier ;
+- écrire un fichier ;
+- utiliser le réseau ;
+- ajouter une commande ;
+- ajouter un provider de preview ;
+- accéder au presse-papiers.
+
+Aucune permission sensible ne doit être accordée implicitement.
+
+---
+
+# 28. Confidentialité et télémétrie
+
+- Aucune télémétrie obligatoire.
+- Aucun compte requis.
+- Aucun chemin de fichier envoyé par défaut.
+- Crash reporting explicitement opt-in.
+- Affichage exact des données collectées.
+- Possibilité d’exporter le rapport avant envoi.
+- Possibilité de tout désactiver.
+- Documentation dans `PRIVACY.md`.
+- Les recherches restent locales.
+
+---
+
+# 29. Logs et diagnostics
+
+Niveaux :
+
+- error ;
+- warn ;
+- info ;
+- debug ;
+- trace.
+
+Exigences :
+
+- rotation ;
+- taille maximale ;
+- redaction des secrets ;
+- chemins anonymisés dans les rapports exportés ;
+- bundle de diagnostic volontaire ;
+- journal séparé pour indexation et opérations ;
+- aucune donnée de fichier lue dans les logs.
+
+---
+
+# 30. Compatibilité
+
+## 30.1 Systèmes
+
+Priorité :
+
+1. Windows 11 x64 ;
+2. Windows 10 22H2 x64 ;
+3. Windows 11 ARM64 ;
+4. Windows 10 ARM64 si raisonnablement supportable.
+
+## 30.2 Systèmes de fichiers
+
+- NTFS ;
+- ReFS ;
+- exFAT ;
+- FAT32 ;
+- partages SMB ;
+- systèmes exposés par WSL ;
+- fichiers cloud placeholders.
+
+Toutes les fonctionnalités ne sont pas disponibles sur tous les systèmes de fichiers. L’UI doit afficher les limites sans échouer silencieusement.
+
+---
+
+# 31. Tests
+
+## 31.1 Tests unitaires
+
+- normalisation des chemins ;
+- conflits de noms ;
+- renommage par lot ;
+- syntaxe de recherche ;
+- calcul des opérations ;
+- règles de sélection ;
+- migrations ;
+- choix de codecs ;
+- validation des archives ;
+- permissions de plugins.
+
+## 31.2 Tests d’intégration
+
+- filesystem temporaire ;
+- copie/déplacement ;
+- Corbeille ;
+- liens ;
+- reparse points ;
+- chemins longs ;
+- Unicode ;
+- fichiers verrouillés ;
+- volumes amovibles ;
+- SQLite ;
+- index ;
+- archives.
+
+## 31.3 Tests Windows réels
+
+- menus contextuels ;
+- drag-and-drop ;
+- propriétés ;
+- COM ;
+- Cloud Files API ;
+- ConPTY ;
+- Narrator ;
+- multi-DPI ;
+- thème sombre ;
+- contraste élevé ;
+- Snap Layouts.
+
+## 31.4 Tests de robustesse
+
+- fuzzing des parsers ;
+- archives malformées ;
+- chemins invalides ;
+- coupure réseau ;
+- lecteur retiré ;
+- processus Shell bloqué ;
+- disque plein ;
+- permissions refusées ;
+- crash pendant migration ;
+- crash pendant copie.
+
+## 31.5 CI
+
+À chaque pull request :
+
+- `cargo fmt --check` ;
+- `cargo clippy --all-targets --all-features` ;
+- tests unitaires ;
+- tests d’intégration compatibles CI ;
+- audit des dépendances ;
+- vérification des licences ;
+- build Windows x64.
+
+Périodiquement :
+
+- ARM64 ;
+- tests E2E ;
+- benchmarks ;
+- fuzzing ;
+- packaging.
+
+---
+
+# 32. Packaging et mises à jour
+
+Formats :
+
+- MSI ;
+- MSIX si les restrictions sont acceptables ;
+- ZIP portable.
+
+Fonctions :
+
+- installation par utilisateur ;
+- installation machine optionnelle ;
+- désinstallation propre ;
+- association optionnelle ;
+- mise à jour signée ;
+- canal stable, bêta et nightly ;
+- rollback ;
+- changelog ;
+- somme SHA-256 ;
+- signatures des artefacts.
+
+Le mode portable doit stocker ses paramètres dans un dossier local lorsqu’un marqueur spécifique est présent.
+
+---
+
+# 33. Licences et dépendances
+
+Le projet doit maintenir :
+
+- `LICENSE-MIT` ;
+- `LICENSE-APACHE` ;
+- `THIRD_PARTY_NOTICES.md` ;
+- `docs/LEGAL.md` ;
+- SBOM par release.
+
+Toute dépendance doit être examinée selon :
+
+- licence ;
+- activité du projet ;
+- vulnérabilités ;
+- présence de code natif ;
+- compatibilité Windows ARM64 ;
+- taille ;
+- politique de mise à jour ;
+- nécessité réelle.
+
+Les composants tels que LZTurbo, RAR, FFmpeg, PDFium ou certains SDK doivent faire l’objet d’un ADR et d’une vérification juridique avant distribution.
+
+---
+
+# 34. Roadmap technique
+
+## Tranche 0 — Validation technique et fondations
+
+### Objectifs
+
+- créer le monorepo ;
+- établir la CI ;
+- comparer les frameworks UI ;
+- valider les points à haut risque.
+
+### Travaux
+
+- workspace Cargo ;
+- configuration Rust ;
+- logging ;
+- gestion des erreurs ;
+- CI Windows ;
+- prototype UI ;
+- benchmark de liste virtualisée ;
+- prototype UI Automation ;
+- prototype COM ;
+- prototype drag-and-drop ;
+- prototype `IContextMenu` ;
+- ADR du framework UI ;
+- squelette des crates ;
+- conventions de code.
+
+### Critères d’acceptation
+
+- build reproductible ;
+- fenêtre affichée sur Windows 10 et 11 ;
+- liste de 100 000 lignes restant interactive ;
+- éléments annoncés par Narrator ;
+- ADR UI validé ;
+- CI verte.
+
+---
+
+## Tranche 1 — Navigation en lecture seule
+
+### Travaux
+
+- `FileEntry` ;
+- abstraction `Location` ;
+- listing asynchrone ;
+- annulation ;
+- barre d’adresse ;
+- breadcrumb ;
+- précédent/suivant/parent ;
+- double-clic ;
+- ouverture avec l’application système ;
+- vues liste et détails ;
+- tri ;
+- chemins longs ;
+- Unicode ;
+- filtre instantané ;
+- navigation clavier ;
+- surveillance du dossier.
+
+### Critères d’acceptation
+
+- navigation dans `C:\` et Known Folders ;
+- aucun blocage UI pendant le listing ;
+- dossier de 50 000 fichiers utilisable ;
+- chemins Unicode et longs fonctionnels ;
+- tests de navigation réussis.
+
+---
+
+## Tranche 2 — Opérations de base
+
+### Travaux
+
+- sélection multiple ;
+- copier/couper/coller ;
+- créer ;
+- renommer ;
+- Corbeille ;
+- suppression définitive ;
+- centre d’activité ;
+- conflits ;
+- annulation ;
+- undo/redo initial ;
+- barre de statut ;
+- checksum ;
+- presse-papiers Windows.
+
+### Critères d’acceptation
+
+- opérations fiables sur NTFS ;
+- progression visible ;
+- erreurs détaillées ;
+- fichiers supprimés dans la Corbeille ;
+- aucune fausse confirmation de succès.
+
+---
+
+## Tranche 3 — Intégration Shell
+
+### Travaux
+
+- `IFileOperation` ;
+- menu contextuel ;
+- propriétés ;
+- ouvrir avec ;
+- icônes système ;
+- thumbnails ;
+- drag-and-drop OLE ;
+- processus auxiliaire expérimental pour handlers ;
+- fallback en cas d’échec.
+
+### Critères d’acceptation
+
+- extensions Shell courantes visibles ;
+- menu utilisable au clavier ;
+- drag-and-drop avec l’Explorateur ;
+- crash d’un handler ne corrompt pas la session autant que techniquement possible.
+
+---
+
+## Tranche 4 — Sidebar et emplacements Windows
+
+### Travaux
+
+- épinglés ;
+- récents ;
+- Known Folders ;
+- Ce PC ;
+- volumes ;
+- espace disque ;
+- USB hotplug ;
+- UNC ;
+- lecteurs réseau ;
+- WSL ;
+- Dev Drive.
+
+### Critères d’acceptation
+
+- sidebar persistante ;
+- ajout/retrait d’un volume détecté ;
+- emplacement indisponible sans blocage UI ;
+- WSL accessible lorsqu’installé.
+
+---
+
+## Tranche 5 — Onglets, fenêtres et dual-pane
+
+### Travaux
+
+- onglets ;
+- multi-fenêtres ;
+- détachement ;
+- restauration ;
+- dual-pane ;
+- copie vers l’autre panneau ;
+- workspaces ;
+- récupération après crash.
+
+### Critères d’acceptation
+
+- gestion d’onglets comparable à un navigateur ;
+- état restauré après redémarrage ;
+- panneaux indépendants ;
+- focus clavier non ambigu.
+
+---
+
+## Tranche 6 — Recherche globale
+
+### Travaux
+
+- syntaxe de recherche ;
+- index Tantivy ;
+- parcours initial ;
+- USN Journal ;
+- mises à jour incrémentales ;
+- exclusions ;
+- filtres ;
+- UI de résultats ;
+- progression ;
+- fallback sans privilèges.
+
+### Critères d’acceptation
+
+- résultats < 100 ms p95 après indexation sur la machine de référence ;
+- UI toujours interactive ;
+- index réparable ;
+- aucune élévation permanente exigée.
+
+---
+
+## Tranche 7 — Productivité
+
+### Travaux
+
+- palette de commandes ;
+- registre central des commandes ;
+- raccourcis personnalisables ;
+- renommage par lot ;
+- terminal ConPTY ;
+- CLI `fx` ;
+- workspaces améliorés.
+
+### Critères d’acceptation
+
+- actions principales accessibles par palette ;
+- terminal ouvert dans le bon dossier ;
+- renommage prévisualisé et annulable ;
+- CLI documenté.
+
+---
+
+## Tranche 8 — Quick Look
+
+### Travaux
+
+- framework de providers ;
+- texte et code ;
+- images ;
+- PDF ;
+- audio/vidéo ;
+- polices ;
+- archives ;
+- Office via Shell Handler ;
+- cache ;
+- isolation ;
+- navigation au clavier.
+
+### Critères d’acceptation
+
+- barre d’espace ouvre et ferme l’aperçu ;
+- navigation avec flèches ;
+- annulation rapide ;
+- fichier malformé ne fait pas tomber l’application principale ;
+- limites mémoire testées.
+
+---
+
+## Tranche 9 — Archives et codecs
+
+### Travaux
+
+- registre de backends ;
+- ZIP/TAR/GZIP/XZ/BZIP2/Zstandard ;
+- extraction sécurisée ;
+- création d’archives ;
+- progression ;
+- mots de passe ;
+- audit LZTurbo ;
+- benchmarks des backends.
+
+### Critères d’acceptation
+
+- protection Zip Slip ;
+- annulation ;
+- détection des bombes potentielles ;
+- aucune dépendance restrictive dans le build par défaut ;
+- résultats de benchmarks publiés.
+
+---
+
+## Tranche 10 — Personnalisation et expérience Windows
+
+### Travaux
+
+- clair/sombre ;
+- contraste élevé ;
+- zoom ;
+- colonnes ;
+- toolbar ;
+- Mica ;
+- Snap Layouts ;
+- multi-DPI ;
+- multi-écrans ;
+- mode portable.
+
+### Critères d’acceptation
+
+- changement de thème sans redémarrage ;
+- DPI mixte fonctionnel ;
+- fallback Windows 10 ;
+- réglages persistants.
+
+---
+
+## Tranche 11 — Accessibilité complète
+
+### Travaux
+
+- audit UI Automation ;
+- Narrator ;
+- noms/rôles/états ;
+- annonces ;
+- ordre de focus ;
+- clavier intégral ;
+- Accessibility Insights ;
+- corrections des listes virtualisées.
+
+### Critères d’acceptation
+
+- toutes les fonctions MVP sont utilisables sans souris ;
+- aucun défaut critique dans Accessibility Insights ;
+- scénario utilisateur complet validé avec Narrator.
+
+---
+
+## Tranche 12 — Cloud local
+
+### Travaux
+
+- détection des racines ;
+- CfAPI ;
+- placeholders ;
+- badges ;
+- téléchargement à la demande ;
+- hydratation/libération ;
+- quota lorsque disponible.
+
+### Critères d’acceptation
+
+- OneDrive local correctement affiché ;
+- états cohérents avec le provider ;
+- aucune réimplémentation du moteur de synchronisation.
+
+---
+
+## Tranche 13 — Outils avancés
+
+### Travaux
+
+- doublons ;
+- treemap ;
+- tags ;
+- EXIF ;
+- nettoyage des dossiers vides ;
+- comparaison initiale ;
+- montage ISO/VHD via API Windows lorsque possible.
+
+### Critères d’acceptation
+
+- aucune suppression automatique dangereuse ;
+- scans annulables ;
+- rapports exportables.
+
+---
+
+## Tranche 14 — Fonctions développeur
+
+### Travaux
+
+- badges Git ;
+- actions Git minimales ;
+- intégration WSL améliorée ;
+- copie des chemins Linux/Windows ;
+- profils de terminal ;
+- Jump Lists.
+
+### Critères d’acceptation
+
+- dépôts volumineux utilisables ;
+- fonctionnalités désactivables ;
+- pas de scan Git continu excessif.
+
+---
+
+## Tranche 15 — Réseau avancé
+
+### Travaux
+
+- découverte SMB ;
+- SFTP ;
+- FTP/FTPS ;
+- WebDAV ;
+- Credential Manager ;
+- favoris ;
+- timeouts et reprise.
+
+### Critères d’acceptation
+
+- aucune attente réseau sur le thread UI ;
+- secrets protégés ;
+- erreurs réseau compréhensibles.
+
+---
+
+## Tranche 16 — Plugins et scripting
+
+### Travaux
+
+- API plugin versionnée ;
+- runtime WASM ;
+- permissions ;
+- commandes ;
+- providers de preview ;
+- SDK ;
+- exemples ;
+- Rhai optionnel.
+
+### Critères d’acceptation
+
+- plugin sans accès implicite ;
+- crash d’un plugin isolé ;
+- permissions visibles ;
+- API documentée.
+
+---
+
+## Tranche 17 — Optimisation et stabilisation
+
+### Travaux
+
+- profiling ;
+- cache thumbnails ;
+- cache icônes ;
+- priorités ;
+- cold start ;
+- consommation mémoire ;
+- dossiers massifs ;
+- index multi-million ;
+- fuzzing ;
+- tests longue durée.
+
+### Critères d’acceptation
+
+- budgets de performance documentés ;
+- absence de fuite significative ;
+- benchmarks reproductibles ;
+- régressions bloquées en CI lorsque possible.
+
+---
+
+## Tranche 18 — Packaging et release 1.0
+
+### Travaux
+
+- MSI/MSIX ;
+- portable ;
+- signatures ;
+- mises à jour ;
+- SBOM ;
+- documentation ;
+- FR/EN ;
+- guide de contribution ;
+- politique de sécurité ;
+- release candidate.
+
+### Critères d’acceptation
+
+- installation et désinstallation propres ;
+- artefacts signés ;
+- mise à jour vérifiée ;
+- documentation utilisateur ;
+- aucune vulnérabilité critique connue ;
+- validation Windows 10/11.
+
+---
+
+# 35. Jalons de livraison
+
+## Prototype technique
+
+Tranches 0 à 1.
+
+Objectif : prouver la faisabilité de l’UI, de l’accessibilité et de la navigation performante.
+
+## Alpha
+
+Tranches 2 à 5.
+
+Objectif : explorateur quotidien local avec opérations, sidebar, onglets et Shell.
+
+## Bêta
+
+Tranches 6 à 11.
+
+Objectif : recherche, productivité, Quick Look, archives, personnalisation et accessibilité.
+
+## Version 1.0
+
+Tranches MVP stabilisées, packaging et documentation.
+
+Le cloud avancé, les outils spécialisés et les plugins peuvent être livrés progressivement si leur stabilité retarde excessivement la version 1.0.
+
+---
+
+# 36. Indicateurs de succès
+
+## Produit
+
+- taux de crash ;
+- temps de démarrage ;
+- latence de navigation ;
+- latence de recherche ;
+- nombre d’erreurs d’opérations ;
+- consommation mémoire ;
+- taux de réussite des restaurations ;
+- nombre d’utilisateurs actifs, uniquement si mesure opt-in ;
+- satisfaction des testeurs.
+
+## Qualité
+
+- couverture des modules critiques ;
+- vulnérabilités ouvertes ;
+- défauts d’accessibilité ;
+- régressions de performance ;
+- temps moyen de résolution ;
+- pourcentage de dépendances à jour.
+
+---
+
+# 37. Risques majeurs
+
+| Risque | Impact | Mitigation |
+|---|---|---|
+| Framework UI insuffisant | Très élevé | Spike et ADR avant développement massif |
+| Accessibilité incomplète | Très élevé | Prototype tranche 0, tests continus |
+| Extensions Shell instables | Élevé | Timeouts, blocage, isolation, fallback |
+| COM complexe | Élevé | Crate dédié, wrappers RAII, tests réels |
+| Corruption pendant opérations | Critique | APIs système, transactions, journaux, tests |
+| USN inaccessible | Moyen | Parcours classique en fallback |
+| Index corrompu | Moyen | Reconstruction et versionnage |
+| CfAPI mal documentée | Élevé | Wrapper isolé et tests OneDrive réels |
+| Licences de codecs | Élevé | Audit, composants optionnels, SBOM |
+| Scope trop large | Critique | Tranches et critères stricts |
+| « Pure Rust » irréaliste | Moyen | Positionnement Rust-first transparent |
+| Performance réseau imprévisible | Élevé | Timeouts, annulation, async |
+| ARM64 incomplet | Moyen | CI et inventaire des dépendances |
+
+---
+
+# 38. Définition de terminé
+
+Une fonctionnalité est terminée lorsque :
+
+- le code est implémenté ;
+- les erreurs sont gérées ;
+- les opérations longues sont annulables ;
+- le thread UI n’est pas bloqué ;
+- les tests requis existent ;
+- l’accessibilité est vérifiée ;
+- les logs ne contiennent pas de secret ;
+- la documentation est mise à jour ;
+- les licences sont validées ;
+- les performances sont acceptables ;
+- les scénarios d’échec sont testés ;
+- la CI est verte ;
+- les critères d’acceptation sont validés manuellement sur Windows.
+
+---
+
+# 39. Conventions de développement
+
+- Rust stable.
+- Edition Rust validée au démarrage du projet.
+- `rustfmt` obligatoire.
+- `clippy` sans avertissement non justifié.
+- `unsafe` interdit par défaut, autorisé seulement dans les crates d’interop avec justification.
+- Erreurs structurées avec contexte.
+- Aucun `unwrap()` dans les chemins de production, sauf invariant documenté.
+- Conventional Commits :
+  - `feat:`
+  - `fix:`
+  - `perf:`
+  - `refactor:`
+  - `test:`
+  - `docs:`
+  - `a11y:`
+  - `security:`
+- ADR pour toute décision structurante.
+- Chaque crate possède un README.
+- API publique documentée avec rustdoc.
+
+---
+
+# 40. Instructions pour Claude Code
+
+Claude Code doit travailler tranche par tranche.
+
+Pour chaque tranche :
+
+1. lire ce PRD ;
+2. inspecter l’état réel du dépôt ;
+3. identifier les écarts ;
+4. proposer un plan de fichiers et modules ;
+5. signaler les risques avant de coder ;
+6. créer ou mettre à jour les ADR nécessaires ;
+7. implémenter en petits commits cohérents ;
+8. ajouter les tests ;
+9. exécuter formatage, lint et tests ;
+10. documenter les limitations ;
+11. produire une checklist de validation manuelle ;
+12. ne pas démarrer la tranche suivante sans validation.
+
+## Prompt générique
+
+```text
+Tu travailles sur Ferrix Explorer, un explorateur de fichiers Windows Rust-first.
+
+Lis intégralement le PRD et les ADR du dépôt. Nous sommes à la tranche [NUMÉRO ET NOM].
+
+Avant de modifier le code :
+
+1. inspecte le workspace et résume son état ;
+2. liste les exigences de la tranche ;
+3. identifie les risques techniques et les dépendances ;
+4. propose la structure de modules et un plan d’implémentation ;
+5. indique les critères d’acceptation vérifiables.
+
+Ensuite, implémente la tranche par étapes atomiques.
+
+Contraintes :
+
+- ne jamais bloquer le thread UI ;
+- utiliser l’annulation pour les tâches longues ;
+- préserver l’accessibilité ;
+- limiter et documenter tout code unsafe ;
+- ne pas ajouter de dépendance sans vérifier sa licence et sa maintenance ;
+- ajouter des tests ;
+- exécuter cargo fmt, cargo clippy et cargo test ;
+- ne pas prétendre qu’une API Windows est supportée sans validation ;
+- ne pas commencer la tranche suivante ;
+- documenter les limitations et la procédure de test manuel Windows.
+
+À la fin, fournis :
+
+- le résumé des changements ;
+- la liste des fichiers modifiés ;
+- les commandes de validation ;
+- les résultats des tests ;
+- les limitations restantes ;
+- la checklist d’acceptation.
+```
+
+---
+
+# 41. Décisions explicitement actées
+
+- La recherche IA ou sémantique est exclue.
+- L’application est Windows-first.
+- Le projet est Rust-first, avec interop Windows et dépendances natives optionnelles.
+- L’accessibilité commence dès la tranche 0.
+- Le choix UI doit être validé par prototype.
+- LZTurbo n’est jamais inclus par défaut sans validation juridique explicite.
+- La synchronisation cloud n’est pas réimplémentée si un provider officiel existe.
+- Les performances doivent être mesurées et non affirmées sans benchmark.
+- La sécurité et l’intégrité des données priment sur la vitesse.
+- Le remplacement complet du shell `explorer.exe` n’est pas un objectif de la version 1.0.

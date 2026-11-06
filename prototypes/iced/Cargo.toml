@@ -1,0 +1,12 @@
+[package]
+name = "iced-spike"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+iced = { workspace = true, features = ["tokio"] }
+
+[lints]
+workspace = true

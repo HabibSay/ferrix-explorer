@@ -1,0 +1,329 @@
+# Partie 1 — Matrice Impact/Effort (priorisation du backlog étendu)
+
+Légende : **Impact** (1=faible → 5=critique) / **Effort** (1=trivial → 5=très complexe) / **Priorité** = MVP (tranches 0-8) / v1.5 (post-lancement rapide) / v2 (vision long terme) / Community (bon ticket "good first issue" pour contributeurs externes)
+
+### 🌟 Killer features
+
+| Feature | Impact | Effort | Priorité |
+|---|---|---|---|
+| Palette de commandes (Ctrl+Shift+P) | 5 | 2 | **MVP** |
+| Terminal intégré (ConPTY) | 4 | 2 | **MVP** |
+| CLI compagnon (`fx open .`) | 4 | 2 | **MVP** |
+| Quick Look / Aperçu rapide (Space) | 5 | 4 | **v1.5** (tranche dédiée) |
+| Git status badges | 4 | 3 | v1.5 |
+| Dual-pane façon Commander | 4 | 3 | v1.5 |
+| Support WSL natif | 3 | 2 | **MVP** |
+
+### 📁 Opérations fichiers avancées
+
+| Feature | Impact | Effort | Priorité |
+|---|---|---|---|
+| Support chemins longs (>260 car.) | 4 | 2 | **MVP** (différenciateur vs Explorer) |
+| Renommage par lot (regex) | 4 | 2 | **MVP** |
+| Checksums (MD5/SHA256) | 3 | 1 | **MVP** |
+| Barre de statut enrichie | 3 | 1 | **MVP** |
+| Filtrage à la volée (liste live) | 4 | 2 | **MVP** |
+| Nettoyeur dossiers vides | 2 | 1 | **MVP** |
+| File d'attente d'opérations gérable | 4 | 3 | v1.5 |
+| Détecteur de doublons | 4 | 3 | v1.5 |
+| Navigation dans archives sans extraction | 4 | 2 | v1.5 |
+| Treemap usage disque | 4 | 3 | v1.5 |
+| Vérification intégrité post-copie | 3 | 2 | v1.5 |
+| Diff fichiers/dossiers | 3 | 3 | v2 |
+| Reprise de transferts interrompus | 3 | 4 | v2 |
+| Suppression sécurisée (shred) | 2 | 2 | v2 |
+| Montage ISO/VHD | 2 | 1 | v1.5 (passthrough API Windows = facile) |
+
+### 🏷️ Organisation
+
+| Feature | Impact | Effort | Priorité |
+|---|---|---|---|
+| Workspaces sauvegardés | 3 | 2 | **MVP** |
+| Tags colorés | 3 | 3 | v1.5 |
+| Visionneuse EXIF/métadonnées | 3 | 2 | v1.5 |
+| Smart folders (dossiers virtuels) | 3 | 3 | v2 |
+| Règles d'organisation auto | 2 | 3 | Community |
+
+### 🌐 Réseau
+
+| Feature | Impact | Effort | Priorité |
+|---|---|---|---|
+| Découverte réseau SMB | 3 | 3 | v1.5 |
+| Client FTP/SFTP/WebDAV | 3 | 4 | v2 |
+| Fichiers hors ligne | 2 | 3 | Community |
+
+### 🔐 Système & sécurité
+
+| Feature | Impact | Effort | Priorité |
+|---|---|---|---|
+| Support Dev Drive (Win11) | 2 | 1 | **MVP** |
+| Snap Layouts Win11 | 3 | 1 | **MVP** |
+| Effet Mica/Acrylic | 4 | 2 | **MVP** |
+| Mode portable | 3 | 1 | **MVP** |
+| Mémorisation multi-écrans | 2 | 1 | **MVP** |
+| Jump Lists taskbar | 3 | 2 | v1.5 |
+| Crash recovery (session) | 3 | 2 | v1.5 |
+| UAC élévation fine | 3 | 3 | v1.5 |
+| Éditeur ACL simplifié | 2 | 3 | v2 |
+
+### ♿ Accessibilité (à ne PAS repousser)
+
+| Feature | Impact | Effort | Priorité |
+|---|---|---|---|
+| Navigation 100% clavier | 4 | 2 | **MVP** |
+| Mode contraste élevé | 3 | 1 | **MVP** |
+| Support UI Automation (lecteurs d'écran) | 5 | 4 | **MVP — démarrer dès Tranche 1** |
+| Télémétrie opt-in transparente | 2 | 2 | v1.5 |
+| Mode navigation vim-like | 2 | 2 | Community |
+
+### 🧩 Extensibilité
+
+| Feature | Impact | Effort | Priorité |
+|---|---|---|---|
+| Système de plugins WASM | 5 | 5 | v2 (gros chantier, bon pour attirer contributeurs) |
+| Scripting (Rhai) | 3 | 3 | v2 |
+| Gestionnaire d'associations fichiers | 2 | 2 | v2 |
+| Packs d'icônes | 2 | 2 | Community |
+
+**Décision retirée :** recherche sémantique IA → supprimée du scope, sur ta demande.
+
+---
+
+# Partie 2 — Moteur de Quick Look / Preview & Compression (architecture dédiée)
+
+Principe directeur : **pour chaque type de fichier, choisir la bibliothèque la plus rapide disponible en licence permissive par défaut**, avec une **architecture pluggable** permettant d'ajouter des moteurs plus rapides mais à licence restrictive (comme LZTurbo) **en option, jamais par défaut**, pour rester 100% open-source "out of the box".
+
+### Nouveau crate : `fx-preview`
+
+```
+fx-preview/
+├── traits.rs          # trait PreviewProvider { fn render(&self, path) -> PreviewContent }
+├── images/            # décodage images
+├── documents/         # PDF, Office (via Shell handlers en fallback)
+├── media/             # vidéo/audio
+├── text/              # code source, coloration syntaxique
+├── archives/          # listing + extraction rapide
+└── backends/          # moteurs de (dé)compression pluggables
+```
+
+### Table des moteurs par type (défaut OSS vs option "Turbo")
+
+| Type de contenu | Moteur par défaut (OSS, inclus) | Licence | Moteur "Turbo" optionnel (perf max, opt-in) |
+|---|---|---|---|
+| **Images** (JPEG/PNG/WebP/AVIF) | `zune-image` (pur Rust, SIMD) | MIT/Apache | `turbojpeg` (bindings libjpeg-turbo) pour JPEG pur débit max |
+| **Images RAW** (photo) | `rawloader` (pur Rust) | MIT/Apache | `libraw` (LGPL) si l'utilisateur l'active |
+| **Redimensionnement/thumbnails** | `fast_image_resize` (SIMD Rust) | MIT/Apache | — |
+| **Archives ZIP/Deflate** | `libdeflater` (bindings `libdeflate`) — bien plus rapide que zlib classique | MIT | **LZTurbo** (powturbo) — plugin externe, non bundlé, opt-in explicite |
+| **Archives 7z** | `sevenz-rust` (pur Rust) | MIT/Apache | SDK 7-Zip natif en fallback |
+| **Archives RAR** (lecture seule) | `unrar` (bindings unrar.dll) | ⚠️ Propriétaire, nécessaire pour compatibilité | — |
+| **Compression interne app** (cache, transferts) | `zstd` (bindings officiels Facebook, mode long-range) | BSD | **LZTurbo** opt-in si installé par l'utilisateur |
+| **PDF** | `pdfium-render` (moteur Google Pdfium) | BSD | — (évite `mupdf` qui est AGPL, incompatible avec distribution permissive) |
+| **Vidéo** (thumbnail/preview) | **Windows Media Foundation** natif (via `windows-rs`) — gratuit, zéro dépendance licence | Système | `ffmpeg` en option (LGPL/GPL selon build) pour formats exotiques |
+| **Audio** (waveform/lecture) | `symphonia` (pur Rust) | MPL-2.0 | — |
+| **Texte/Code** (coloration syntaxique) | `tree-sitter` (incrémental, très rapide) | MIT | `syntect` en fallback (grammaires Sublime, plus lourd) |
+| **Polices** | **DirectWrite** natif (via `windows-rs`) | Système | — |
+| **Office (docx/xlsx)** | Shell Preview Handlers natifs Windows (fallback simple) | Système | Parsing custom en v2 si besoin |
+
+### Architecture pluggable (trait Rust)
+
+```rust
+pub trait CompressionBackend: Send + Sync {
+    fn decompress(&self, input: &[u8]) -> Result<Vec<u8>>;
+    fn compress(&self, input: &[u8], level: u8) -> Result<Vec<u8>>;
+    fn name(&self) -> &'static str;
+}
+
+// Enregistrement au runtime, sélection auto du plus rapide dispo
+pub struct BackendRegistry {
+    backends: Vec<Box<dyn CompressionBackend>>,
+}
+```
+
+**Important — point légal/licence** : LZTurbo (powturbo) n'est **pas en licence OSI-approuvée** (gratuit non-commercial, source disponible mais restrictions). Il sera donc :
+- **jamais inclus dans le build par défaut** distribué publiquement,
+- proposé comme **plugin externe optionnel** que l'utilisateur compile/installe lui-même s'il accepte la licence,
+- clairement documenté dans `docs/LEGAL.md` et dans les paramètres ("moteur de performance externe — licence tierce").
+
+Cette même logique "défaut OSS + plugin perf opt-in" s'applique à tout moteur tiers non-permissif qu'on voudrait ajouter plus tard (ex: `mupdf`, `ffmpeg` full build).
+
+---
+
+# Partie 3 — PRD Complet Mis à Jour
+
+## 1. Vision produit
+
+> Un explorateur de fichiers natif Windows 10/11, écrit 100% en Rust, qui égale ou dépasse `explorer.exe` en fonctionnalités, tout en étant radicalement plus rapide (démarrage instantané, scroll sans lag, recherche instantanée façon "Everything", aperçu instantané façon Quick Look macOS), 100% open-source (MIT/Apache-2.0), avec une architecture extensible par plugins.
+
+**Nom de projet proposé :** `ferrix-explorer`
+
+## 2. Objectifs & Non-objectifs
+
+### Objectifs
+- Navigation fluide, listes virtualisées, zéro lag sur dossiers massifs
+- Menu contextuel natif Windows complet
+- Recherche globale instantanée (USN Journal)
+- Multi-onglets, multi-fenêtres, mode dual-pane commander
+- Quick Look (aperçu instantané, toutes formats courants)
+- Sidebar complète (épinglés, récents, drives, cloud)
+- Intégration cloud (OneDrive/GDrive/Dropbox) via Cloud Files API Windows
+- Palette de commandes, terminal intégré, CLI compagnon
+- Accessibilité complète dès le départ (UI Automation)
+- Architecture plugins (WASM) pour extensibilité communautaire
+
+### Non-objectifs (v1)
+- Remplacement du process `explorer.exe` (app standalone + option "défaut")
+- Support Linux/macOS natif (architecture modulaire, mais focus Win10/11)
+- Recherche sémantique/IA — **hors scope, non prévu**
+- Éditeur avancé intégré (on s'appuie sur handlers existants + Quick Look)
+
+## 3. Stack technique
+
+| Composant | Choix |
+|---|---|
+| Langage | Rust (edition 2021/2024) |
+| UI | Slint (plan B : iced, ou Win32+Direct2D si limitations) |
+| Shell interop | `windows-rs` (IShellFolder, IContextMenu, IFileOperation, CfApi) |
+| Parcours FS | `jwalk` + `rayon` |
+| Watch FS | `notify` |
+| Indexation/recherche | `tantivy` + lecture USN Journal/MFT |
+| DB locale | `rusqlite` (métadonnées, config, tags, historique) |
+| Preview engine | `fx-preview` (cf. Partie 2) |
+| Compression | `zstd`, `libdeflater`, `sevenz-rust` (+ plugin LZTurbo opt-in) |
+| Terminal intégré | ConPTY via `windows-rs` |
+| Async | `tokio` |
+| Cloud APIs | `reqwest` + `oauth2`, Microsoft Graph API, Google Drive API v3, Dropbox API |
+| Config | `serde` + TOML |
+| Logging | `tracing` |
+| Plugins | WASM runtime (`wasmtime`) — v2 |
+| Packaging | `cargo-wix` (MSI) / MSIX |
+| CI/CD | GitHub Actions (windows-latest) |
+
+## 4. Architecture logicielle — Workspace Cargo
+
+```
+ferrix-explorer/
+├── Cargo.toml
+├── crates/
+│   ├── fx-core/          # Modèle FS, opérations fichiers, undo/redo
+│   ├── fx-shell/         # Interop COM Shell (context menu, icons, IFileOperation)
+│   ├── fx-index/         # Moteur recherche (tantivy + USN Journal)
+│   ├── fx-preview/       # Quick Look (images, PDF, vidéo, audio, code, archives)
+│   ├── fx-codec/         # Backends compression/décompression pluggables
+│   ├── fx-cloud/         # Providers cloud (OneDrive, GDrive, Dropbox)
+│   ├── fx-terminal/      # Terminal intégré (ConPTY)
+│   ├── fx-plugins/       # Runtime WASM (v2)
+│   ├── fx-a11y/          # Accessibilité (UI Automation wrapper)
+│   ├── fx-settings/      # Config, thèmes, persistance
+│   ├── fx-ui/            # Composants UI Slint
+│   ├── fx-cli/           # Binaire CLI compagnon (`fx`)
+│   └── fx-app/           # Binaire principal
+├── resources/
+├── installer/
+└── docs/
+    └── LEGAL.md          # Disclaimers licences tierces (LZTurbo, unrar, etc.)
+```
+
+## 5. Fonctionnalités détaillées (backlog complet)
+
+*(voir Partie 1 pour priorisation précise — liste exhaustive ci-dessous, cochée par thème)*
+
+### Navigation
+Treeview, breadcrumb cliquable, barre d'adresse éditable, historique back/forward, multi-onglets, multi-fenêtres, **dual-pane commander**, vues (icônes/liste/détails/mosaïque), zoom molette, tri/groupement multi-critères, **filtrage à la volée**.
+
+### Sidebar
+Épinglés (drag&drop), accès rapide, récents, bibliothèques (KnownFolders), Ce PC + jauge espace, réseau, comptes cloud, **workspaces sauvegardés**.
+
+### Opérations fichiers
+Copier/couper/coller, renommer (F2 + **batch rename regex**), suppression → corbeille, undo/redo, drag&drop (interne + OLE externe), créer fichier/dossier, propriétés natif, compression/décompression (moteurs cf. Partie 2), **support chemins longs \\?\**, **checksums intégrés**, **nettoyeur dossiers vides**, file d'attente d'opérations gérable (v1.5), **détecteur de doublons** (v1.5), **navigation archives sans extraction** (v1.5), **treemap disque** (v1.5).
+
+### Quick Look / Preview (nouveau — tranche dédiée)
+Aperçu instantané (barre espace) pour : images (toutes formats + RAW), PDF, vidéo/audio (thumbnails + lecture via Media Foundation), code source (coloration syntaxique tree-sitter), archives (listing sans extraction), métadonnées EXIF.
+
+### Menu contextuel
+Menu natif complet (fusion `IContextMenu`, extensions tierces type 7-Zip/Git), menu custom additionnel.
+
+### Recherche
+Barre recherche globale instantanée (<100ms), index USN Journal + tantivy, filtres avancés, recherche full-text contenu (optionnelle).
+
+### Power-user
+**Palette de commandes** (Ctrl+Shift+P), **terminal intégré** (ConPTY), **CLI compagnon** (`fx`), **support WSL natif** (`\\wsl$`), **Git status badges** (v1.5).
+
+### Cloud
+Détection auto dossiers sync, overlay icônes via **Cloud Files API Windows (CfApi)** — pas de réimplémentation, authentification OAuth2, quota affiché.
+
+### Raccourcis clavier
+Parité Explorer complète + extensions, remapping utilisateur, **navigation 100% clavier**.
+
+### Personnalisation
+Thème clair/sombre sync système, **effet Mica/Acrylic natif Win11**, densité d'affichage, colonnes personnalisables, **tags colorés** (v1.5).
+
+### Système Windows
+**Snap Layouts Win11**, **Jump Lists**, **mode portable**, **mémorisation multi-écrans**, **support Dev Drive**, crash recovery session (v1.5), UAC élévation fine (v1.5).
+
+### Accessibilité (prioritaire dès le début)
+**UI Automation complet**, **mode contraste élevé**, **navigation clavier intégrale**, télémétrie opt-in transparente (v1.5).
+
+### Réseau (v1.5/v2)
+Découverte SMB, client FTP/SFTP/WebDAV, fichiers hors ligne.
+
+### Extensibilité (v2)
+Système de plugins WASM (`fx-plugins`), scripting Rhai, gestionnaire d'associations, packs d'icônes.
+
+---
+
+## 6. Roadmap en tranches (révisée)
+
+> Chaque tranche = version livrable testable. Ne pas avancer sans validation des critères d'acceptation.
+
+| # | Tranche | Contenu clé | Statut |
+|---|---|---|---|
+| **0** | Fondations | Workspace Cargo, fenêtre Slint vide, CI, logging, **squelette `fx-a11y`** | MVP |
+| **1** | Navigation de base | Listing FS, vues, double-clic, breadcrumb, historique, **chemins longs**, **filtrage à la volée**, **navigation clavier de base** | MVP |
+| **2** | Opérations fichiers | Copier/déplacer/supprimer (corbeille), renommer, créer, sélection, **checksums**, **barre statut enrichie**, **nettoyeur dossiers vides** | MVP |
+| **3** | Shell natif | `IContextMenu`, `IFileOperation`, propriétés natif, thumbnails Shell, drag&drop OLE | MVP |
+| **4** | Sidebar | Épinglés, accès rapide, récents, bibliothèques, drives, **Dev Drive** | MVP |
+| **5** | Multi-onglets/fenêtres | Onglets, split view, **mode dual-pane commander**, **workspaces sauvegardés** | MVP |
+| **6** | Recherche globale | USN Journal + tantivy, UI recherche instantanée, filtres | MVP |
+| **7** | Power-user | **Palette de commandes**, **terminal intégré**, **CLI compagnon**, **support WSL**, **batch rename regex** | MVP |
+| **8** | Quick Look / Preview Engine | `fx-preview` complet : images, PDF, vidéo/audio, code, archives (cf. Partie 2) | MVP |
+| **9** | Personnalisation & Win11 | Thèmes, **Mica/Acrylic**, zoom, colonnes custom, **Snap Layouts**, **mode portable**, **multi-écrans** | MVP |
+| **10** | Accessibilité finalisée | **UI Automation complet**, contraste élevé, audit WCAG, i18n FR/EN | MVP |
+| **11** | Cloud | OneDrive/GDrive/Dropbox via CfApi, badges sync, quotas | v1.5 |
+| **12** | Outils avancés fichiers | Détecteur doublons, treemap disque, diff dossiers, archives sans extraction, tags colorés, EXIF viewer | v1.5 |
+| **13** | Git & Dev features | Git status badges, Jump Lists, UAC fin, crash recovery | v1.5 |
+| **14** | Réseau avancé | SMB discovery, FTP/SFTP/WebDAV | v2 |
+| **15** | Performance & Optimisation | Profiling, benchmarks 1M fichiers, cache GPU, cold-start <200ms | Continu (toutes phases) |
+| **16** | Extensibilité | Plugins WASM, scripting Rhai, file associations | v2 |
+| **17** | Packaging & Distribution | MSI/MSIX, signature, auto-update | MVP (release) |
+| **18** | Polish & Release 1.0 | Tests utilisateurs, traductions, doc contributeurs | MVP (release) |
+
+**Changement clé vs version précédente** : l'accessibilité (Tranche 10) et les quick wins power-user (Tranche 7) sont **remontés beaucoup plus tôt**, car les ajouter après coup sur une UI déjà figée est bien plus coûteux. Le Quick Look devient sa propre tranche dédiée (8) vu sa complexité et son impact.
+
+---
+
+## 7. Risques techniques
+
+| Risque | Mitigation |
+|---|---|
+| Interop COM Shell complexe via `windows-rs` | Temps dédié Tranche 3, s'inspirer de projets existants (ex: `Files` C#/WinUI) pour la logique, réécrire en Rust |
+| USN Journal nécessite privilèges admin parfois | Fallback `jwalk` classique si accès refusé |
+| Maturité Slint pour UI complexe | Plan B : `iced` ou Win32+Direct2D |
+| CfApi (Cloud Files) peu documentée en Rust | Wrapper manuel `windows-rs`, tests sur machine avec OneDrive réel |
+| **Licence LZTurbo incompatible OSS** | Jamais bundlé par défaut — plugin externe opt-in uniquement, disclaimer `docs/LEGAL.md` |
+| Licence `unrar` (propriétaire) | Isolé dans `fx-codec`, désactivable à la compilation, clairement documenté |
+| UI Automation complexe à implémenter correctement | Démarrer tôt (Tranche 0-1), tester avec Narrator Windows réellement, pas juste "cocher la case" |
+
+## 8. Conventions de développement
+
+- Tests unitaires `fx-core`/`fx-index`/`fx-preview`/`fx-codec` ; tests d'intégration manuels documentés pour `fx-shell`
+- CI : build + clippy + fmt obligatoires
+- Conventional commits (`feat:`, `fix:`, `perf:`, `a11y:`, `docs:`)
+- Chaque crate documentée (README + rustdoc)
+- Licence : MIT OU Apache-2.0 (dual license)
+- `docs/LEGAL.md` obligatoire listant toute dépendance à licence non-permissive et son statut (optionnelle/isolée/opt-in)
+
+## 9. Utilisation avec Claude Code
+
+Prompt type par tranche :
+
+> "Voici le PRD complet du projet (version révisée avec Quick Look/preview engine, accessibilité anticipée, et power-user features). Nous sommes à la **Tranche X**. Implémente les tâches de cette tranche selon l'architecture multi-crates définie. Propose d'abord la structure de fichiers/modules, puis implémente avec tests."
