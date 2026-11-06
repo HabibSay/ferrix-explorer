@@ -56,8 +56,12 @@ pub fn delete_to_recycle(
 }
 
 /// Removes `paths` for good. Reachable only through an explicit, confirmed command.
-pub fn delete_permanent(paths: &[PathBuf], control: &OperationControl) -> OperationSummary {
-    let mut summary = OperationSummary::new(OperationId::next(), OperationKind::DeletePermanent);
+pub fn delete_permanent(
+    id: OperationId,
+    paths: &[PathBuf],
+    control: &OperationControl,
+) -> OperationSummary {
+    let mut summary = OperationSummary::new(id, OperationKind::DeletePermanent);
     let mut cancelled = false;
 
     for path in paths {
@@ -185,7 +189,11 @@ mod tests {
         fs::create_dir_all(&nested).unwrap();
         fs::write(nested.join("file.txt"), b"x").unwrap();
 
-        let summary = delete_permanent(&[dir.path().join("a")], &OperationControl::new());
+        let summary = delete_permanent(
+            OperationId::next(),
+            &[dir.path().join("a")],
+            &OperationControl::new(),
+        );
         assert_eq!(summary.files_done, 1);
         assert!(summary.state.is_success());
         assert!(!dir.path().join("a").exists());
@@ -199,7 +207,7 @@ mod tests {
 
         let control = OperationControl::new();
         control.cancel();
-        let summary = delete_permanent(std::slice::from_ref(&file), &control);
+        let summary = delete_permanent(OperationId::next(), std::slice::from_ref(&file), &control);
         assert_eq!(summary.state, crate::OperationState::Cancelled);
         assert!(file.exists());
     }

@@ -81,6 +81,31 @@ pub trait PlatformOps {
     fn apply_metadata(&self, from: &Path, to: &Path) -> io::Result<()> {
         std_apply_metadata(from, to)
     }
+
+    /// Classify a reparse point so the engine can recreate symbolic links instead
+    /// of skipping them (slice 2 refinement of rule 6). `None` — the `std`-only
+    /// default — keeps the conservative skip for junctions and unknown tags.
+    fn reparse_kind(&self, _path: &Path) -> Option<ReparseKind> {
+        None
+    }
+
+    /// Create a symbolic link at `link` pointing at `target`.
+    ///
+    /// `fx-ops` stays platform-neutral: link creation is a platform capability, so the
+    /// default refuses and the Windows adapter implements it.
+    fn create_symlink(&self, _target: &Path, _link: &Path, _is_dir: bool) -> io::Result<()> {
+        Err(io::Error::other(
+            "this platform adapter cannot create symbolic links",
+        ))
+    }
+}
+
+/// What kind of reparse point a source is, as classified by the platform.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReparseKind {
+    SymbolicLink,
+    Junction,
+    Other,
 }
 
 /// Portable metadata copy: modification and access times, then the read-only flag.

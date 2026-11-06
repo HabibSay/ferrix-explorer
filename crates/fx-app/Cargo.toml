@@ -9,6 +9,7 @@ license.workspace = true
 fx-a11y = { path = "../fx-a11y" }
 fx-domain = { path = "../fx-domain" }
 fx-fs = { path = "../fx-fs" }
+fx-ops = { path = "../fx-ops" }
 fx-settings = { path = "../fx-settings" }
 fx-shell = { path = "../fx-shell" }
 fx-ui = { path = "../fx-ui" }

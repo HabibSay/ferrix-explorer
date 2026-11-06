@@ -5,11 +5,11 @@
 - Project: **Ferrix Explorer**, a Rust file explorer for Windows 10/11.
 - Source of truth: `PRD.md` and the decision records in `docs/adr/`. Read the whole PRD and the
   current tranche before changing code.
-- Current tranche: **Tranche 2 — file operations** (`docs/superpowers/specs/2026-11-06-tranche-2-file-operations-design.md`).
-  Tranche 1 is implemented on `master`; Tranche 2 is in design review, and the structural decisions
-  listed in section 2 of its spec must be answered before slice 1. Do not implement Tranche 3
-  features (`IFileOperation`, the native progress dialog, OLE drag-and-drop, native context menus)
-  before Tranche 2 is accepted.
+- Current tranche: **Tranche 2 — file operations** (`docs/superpowers/specs/2026-11-06-tranche-2-file-operations-design.md`),
+  implemented on branch `tranche-2-file-operations`. Slices 1–5 are coded; the open work is the
+  Windows validation sign-off (`docs/tranche-2-validation.md`) and the batch list it links.
+  Do not implement Tranche 3 features (`IFileOperation`, the native progress dialog, OLE
+  drag-and-drop, native context menus) before Tranche 2 is accepted — no Tranche 3 code exists.
 - The UI framework is **Slint 1.18.1**, selected in `docs/adr/0001-ui-framework.md`; the iced spike
   stays a benchmark baseline, not product code.
 

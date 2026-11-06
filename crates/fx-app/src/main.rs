@@ -9,7 +9,12 @@
 #[allow(dead_code)]
 mod strings;
 
+mod activity;
+mod conflict_dialog;
+mod operations;
 mod orchestration;
+mod platform_ops;
+mod shortcuts;
 
 use fx_domain::location::Location;
 use fx_settings::{WindowSize, load_window_size, save_window_size};
@@ -69,10 +74,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create the orchestrator and wire all window callbacks.
     let orchestrator = Orchestrator::new(window.as_weak(), initial_location);
+    let orch = std::sync::Arc::new(std::sync::Mutex::new(orchestrator));
+    let orch_close = orch.clone();
     {
         let win = &window;
-
-        let orch = std::sync::Arc::new(std::sync::Mutex::new(orchestrator));
 
         let orch_back = orch.clone();
         win.on_navigate_back(move || {
@@ -155,11 +160,137 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         // focus-address-bar callback: handled in Slint (calls focus-input() directly).
         win.on_focus_address_bar(|| {});
+
+        // Tranche 2: keyboard shortcuts → domain action → orchestrator command.
+        let orch_keys = orch.clone();
+        win.on_shortcut_key(move |text, ctrl, shift, alt| {
+            match shortcuts::action_for(&text, ctrl, shift, alt) {
+                Some(action) => orch_keys.lock().unwrap().dispatch_action(action),
+                None => false,
+            }
+        });
+
+        // Tranche 2: inline rename commit / dismiss.
+        let orch_ren = orch.clone();
+        win.on_rename_committed(move |id, name| {
+            orch_ren
+                .lock()
+                .unwrap()
+                .on_rename_committed(id as u64, name.to_string());
+        });
+
+        let orch_ren_cancel = orch.clone();
+        win.on_rename_cancelled(move |_| {
+            orch_ren_cancel.lock().unwrap().on_rename_cancelled();
+        });
+
+        // Live feedback while the inline rename editor is open.
+        let orch_ren_validate = orch.clone();
+        win.on_rename_validate(move |name| {
+            orch_ren_validate
+                .lock()
+                .unwrap()
+                .on_rename_validate(name.to_string())
+                .into()
+        });
+
+        // Tranche 2: permanent-delete confirmation gate.
+        let orch_del_yes = orch.clone();
+        win.on_permanent_delete_confirmed(move || {
+            orch_del_yes.lock().unwrap().confirm_permanent_delete();
+        });
+
+        let orch_del_no = orch.clone();
+        win.on_permanent_delete_cancelled(move || {
+            orch_del_no.lock().unwrap().cancel_permanent_delete();
+        });
+
+        // Tranche 2: conflict dialog answer → the dispatcher task holding the
+        // paused worker's answer channel.
+        let orch_conflict = orch.clone();
+        win.on_conflict_resolved(move |choice, apply_to_all| {
+            orch_conflict
+                .lock()
+                .unwrap()
+                .submit_conflict_answer(choice.to_string(), apply_to_all);
+        });
+
+        // Tranche 2: activity center buttons (per row index).
+        let orch_apause = orch.clone();
+        win.on_activity_pause_op(move |i| {
+            orch_apause
+                .lock()
+                .unwrap()
+                .activity_pause(i.max(0) as usize);
+        });
+
+        let orch_aresume = orch.clone();
+        win.on_activity_resume_op(move |i| {
+            orch_aresume
+                .lock()
+                .unwrap()
+                .activity_resume(i.max(0) as usize);
+        });
+
+        let orch_acancel = orch.clone();
+        win.on_activity_cancel_op(move |i| {
+            orch_acancel
+                .lock()
+                .unwrap()
+                .activity_cancel(i.max(0) as usize);
+        });
+
+        let orch_aretry = orch.clone();
+        win.on_activity_retry_op(move |i| {
+            orch_aretry
+                .lock()
+                .unwrap()
+                .activity_retry(i.max(0) as usize);
+        });
+
+        // Tranche 2: right-click over the selection → app-local menu.
+        let orch_menu = orch.clone();
+        win.on_context_menu_requested(move |_id, _x, _y| {
+            orch_menu.lock().unwrap().on_context_menu();
+        });
+
+        // Tranche 2: internal drag-and-drop — payload arming and drop resolution.
+        let orch_drag = orch.clone();
+        win.on_row_drag_pressed(move |id| orch_drag.lock().unwrap().on_drag_pressed(id as u64));
+
+        let orch_drop = orch.clone();
+        win.on_drop_requested(move |data, proposed, target| {
+            orch_drop
+                .lock()
+                .unwrap()
+                .on_drop_requested(data, proposed, target)
+        });
+
+        // Tranche 2: selection by pattern (OPS-11).
+        let orch_pat = orch.clone();
+        win.on_pattern_submitted(move |pattern| {
+            orch_pat
+                .lock()
+                .unwrap()
+                .on_pattern_submitted(pattern.to_string());
+        });
+
+        // Tranche 2: cleaner confirmation answer (OPS-13).
+        let orch_clean = orch.clone();
+        win.on_empty_clean_answered(move |accepted| {
+            orch_clean.lock().unwrap().submit_clean_answer(accepted);
+        });
     }
+
+    // Start the event dispatcher now that the orchestrator is addressable.
+    Orchestrator::spawn_event_dispatch(orch.clone());
 
     // Persist window size when the user closes the window.
     let window_weak = window.as_weak();
     window.window().on_close_requested(move || {
+        // Release any pending conflict first: answered-cancel lets the paused worker
+        // finish before the runtime is dropped.
+        orch_close.lock().unwrap().close_conflict_channel();
         if let Some(w) = window_weak.upgrade() {
             let phys = w.window().size();
             let saved = WindowSize {
@@ -296,5 +427,36 @@ mod tests {
             root_accessibility(strings::APP_TITLE).name,
             strings::APP_TITLE
         );
+    }
+
+    /// Tranche 2 guard (spec §10): the dialog and activity sources must carry no literal
+    /// user-visible text — every `text:`/`accessible-label:` comes from `resources/en-US.slint`.
+    #[test]
+    fn tranche_2_dialog_components_take_their_text_from_resources() {
+        let dialogs = include_str!("../../fx-ui/src/dialogs.slint");
+        let activity = include_str!("../../fx-ui/src/activity.slint");
+        for (name, source) in [("dialogs.slint", dialogs), ("activity.slint", activity)] {
+            for marker in ["text: \"", "accessible-label: \""] {
+                assert!(
+                    !source.contains(marker),
+                    "{name} still hard-codes text after `{marker}`"
+                );
+            }
+        }
+    }
+
+    /// The Rust and Slint resource files must not drift apart for the wording they share.
+    #[test]
+    fn rust_and_slint_resources_agree_on_the_shared_labels() {
+        let slint = include_str!("../../../resources/en-US.slint");
+        for value in [
+            strings::STATUS_ITEMS_COUNT,
+            strings::KIND_FOLDER,
+            strings::KIND_FILE,
+            strings::KIND_SYMLINK,
+            strings::KIND_REPARSE_POINT,
+        ] {
+            assert!(slint.contains(value), "missing from en-US.slint: {value}");
+        }
     }
 }

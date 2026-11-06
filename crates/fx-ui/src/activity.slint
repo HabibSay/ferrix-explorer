@@ -1,0 +1,181 @@
+// Tranche 2 activity center: per-operation progress, pause/resume, cancel.
+import { Button, ListView } from "std-widgets.slint";
+import { Strings } from "resources/en-US.slint";
+
+// ── ActivityRow ───────────────────────────────────────────────────────────────
+
+// Snapshot of one running or completed operation, passed to the ActivityCenter list.
+export struct ActivityRow {
+    op-kind: string,
+    current-file: string,
+    files-done: int,
+    files-total: int,
+    bytes-done: float,
+    bytes-total: float,
+    speed-text: string,
+    eta-text: string,
+    state: string,
+    // Behaviour flag: the Pause button switches on this, never on the state word, so a
+    // translated label cannot change what the button does.
+    is-paused: bool,
+    error-text: string,
+    // Accessible rendering of the progress bar, e.g. "42 percent, 3 of 7 files".
+    progress-text: string,
+}
+
+// ── ActivityCenter ────────────────────────────────────────────────────────────
+
+// Collapsible pane at the bottom of the window showing all active and recent operations.
+// The host sets `rows` from the Rust side; the UI calls the pause/resume/cancel callbacks
+// with the row index as the identifier.
+export component ActivityCenter inherits Rectangle {
+    in property <[ActivityRow]> rows: [];
+    // Whether the pane is expanded.
+    in-out property <bool> expanded: true;
+
+    callback pause-op(int);
+    callback resume-op(int);
+    callback cancel-op(int);
+    callback retry-op(int);
+
+    background: #f0f0f0;
+    border-color: #cccccc;
+    border-width: 1px;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // Toggle bar
+        toggle-area := TouchArea {
+            height: 28px;
+            accessible-role: button;
+            accessible-label: root.expanded ? Strings.activity-collapse-label : Strings.activity-expand-label;
+            clicked => { root.expanded = !root.expanded; }
+
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 4px;
+
+                Text {
+                    text: (root.expanded ? "▾ " : "▸ ") + Strings.activity-heading + " (" + root.rows.length + ")";
+                    vertical-alignment: center;
+                    font-weight: 700;
+                }
+            }
+        }
+
+        // Row list — only visible when expanded.
+        if root.expanded: ListView {
+            accessible-role: list;
+            height: min(root.rows.length * 56px, 200px);
+            for row[i] in root.rows: Rectangle {
+                height: 56px;
+                background: #ffffff;
+                border-color: #e0e0e0;
+                border-width: 1px;
+
+                VerticalLayout {
+                    padding: 4px;
+                    spacing: 2px;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+
+                        Text {
+                            text: row.op-kind + " — " + row.current-file;
+                            overflow: elide;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+
+                        Text {
+                            text: row.speed-text;
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            text: row.eta-text;
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            text: row.state;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 4px;
+                        height: 20px;
+
+                        // Progress bar
+                        progress-bg := Rectangle {
+                            height: 6px;
+                            horizontal-stretch: 1;
+                            background: #e0e0e0;
+
+                            Rectangle {
+                                x: 0px;
+                                y: 0px;
+                                height: parent.height;
+                                width: row.bytes-total > 0
+                                    ? parent.width * (row.bytes-done * 1.0 / row.bytes-total)
+                                    : 0px;
+                                background: #0078d7;
+                            }
+                        }
+
+                        Text {
+                            text: row.files-done + "/" + row.files-total;
+                            vertical-alignment: center;
+                            // The bar itself carries no semantics in this Slint
+                            // version; expose the same information as text (spec §9).
+                            accessible-role: text;
+                            accessible-label: row.progress-text;
+                        }
+
+                        // Pause/Resume button
+                        Button {
+                            text: row.is-paused ? Strings.activity-resume : Strings.activity-pause;
+                            accessible-label: row.is-paused ? Strings.activity-resume-label : Strings.activity-pause-label;
+                            clicked => {
+                                if (row.is-paused) {
+                                    root.resume-op(i);
+                                } else {
+                                    root.pause-op(i);
+                                }
+                            }
+                        }
+
+                        // Cancel button
+                        Button {
+                            text: Strings.action-cancel;
+                            accessible-label: Strings.action-cancel-operation-label;
+                            clicked => { root.cancel-op(i); }
+                        }
+
+                        // Retry starts a new operation over the failed items only;
+                        // it stays visible with its reason when there is nothing to retry.
+                        Button {
+                            text: Strings.activity-retry;
+                            enabled: row.error-text != "";
+                            accessible-label: row.error-text != ""
+                                ? Strings.activity-retry-label
+                                : Strings.activity-retry-disabled-label;
+                            clicked => { root.retry-op(i); }
+                        }
+                    }
+
+                    if row.error-text != "": Text {
+                        text: row.error-text;
+                        color: #cc0000;
+                        overflow: elide;
+                        accessible-role: text;
+                        accessible-label: row.error-text;
+                    }
+                }
+            }
+        }
+    }
+}

@@ -18,7 +18,7 @@ use crate::{
     control::OperationControl,
     error::{ItemFailure, OperationError},
     plan::{OperationPlan, PlanItem, same_path},
-    port::PlatformOps,
+    port::{PlatformOps, ReparseKind},
     progress::{OperationId, OperationKind, OperationSummary, Progress, SpeedMeter},
     rename::unique_sibling,
 };
@@ -123,11 +123,7 @@ impl Transfer<'_> {
         is_move: bool,
     ) -> Result<(), OperationError> {
         if item.is_reparse_point {
-            state.summary.record_failure(ItemFailure::new(
-                &item.source,
-                OperationError::ReparsePointUnsupported,
-            ));
-            return Ok(());
+            return self.transfer_link(&item.source, &item.destination, is_move, state);
         }
 
         if !item.is_dir {
@@ -158,6 +154,32 @@ impl Transfer<'_> {
         self.copy_dir(&item.source, &item.destination, state, 0, true)?;
         remove_tree(&item.source, self.control)?;
         Ok(())
+    }
+
+    /// Rule 6, as slice 2 refined it: a symbolic link is recreated as a link. A junction,
+    /// an unknown tag, or a platform that cannot classify at all stays skipped — following
+    /// one could copy a tree the user never selected.
+    fn transfer_link(
+        &mut self,
+        source: &Path,
+        destination: &Path,
+        is_move: bool,
+        state: &mut RunState,
+    ) -> Result<(), OperationError> {
+        reparse_action(self.port.reparse_kind(source))?;
+        let target = fs::read_link(source).map_err(|error| OperationError::from_io(&error))?;
+        // The link's own metadata follows the target: a link to a folder is a folder link.
+        let is_dir = fs::metadata(source)
+            .map(|metadata| metadata.is_dir())
+            .unwrap_or(false);
+        self.port
+            .create_symlink(&target, destination, is_dir)
+            .map_err(|error| OperationError::from_io(&error))?;
+        state.summary.files_done += 1;
+        if is_move {
+            fs::remove_file(source).map_err(|error| OperationError::from_io(&error))?;
+        }
+        verify_present(destination)
     }
 
     fn transfer_file(
@@ -444,12 +466,16 @@ impl Transfer<'_> {
             let target = destination.join(entry.file_name());
 
             if metadata.file_type().is_symlink() {
-                let error = OperationError::ReparsePointUnsupported;
-                if all_or_nothing {
-                    return Err(error);
+                match self.transfer_link(&path, &target, false, state) {
+                    Ok(()) => continue,
+                    Err(error) => {
+                        if all_or_nothing {
+                            return Err(error);
+                        }
+                        state.summary.record_failure(ItemFailure::new(&path, error));
+                        continue;
+                    }
                 }
-                state.summary.record_failure(ItemFailure::new(&path, error));
-                continue;
             }
 
             let result = if metadata.is_dir() {
@@ -531,6 +557,17 @@ fn temporary_path(destination: &Path, id: OperationId) -> PathBuf {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "ferrix".to_owned());
     parent.join(format!("{name}.fxpart-{}", id.0))
+}
+
+/// Rule 6, as slice 2 refined it: only symbolic links are recreated. A junction, an
+/// unknown tag, or a platform that cannot classify at all stays skipped.
+fn reparse_action(kind: Option<ReparseKind>) -> Result<(), OperationError> {
+    match kind {
+        Some(ReparseKind::SymbolicLink) => Ok(()),
+        Some(ReparseKind::Junction) | Some(ReparseKind::Other) | None => {
+            Err(OperationError::ReparsePointUnsupported)
+        }
+    }
 }
 
 fn verify_present(path: &Path) -> Result<(), OperationError> {
@@ -640,5 +677,23 @@ fn remove_tree_plain(path: &Path, control: &OperationControl) -> Result<(), Oper
         fs::remove_file(path)
             .or_else(|_| fs::remove_dir(path))
             .map_err(|error| OperationError::from_io(&error))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reparse_action;
+    use crate::{error::OperationError, port::ReparseKind};
+
+    #[test]
+    fn only_symbolic_links_are_recreated() {
+        assert_eq!(reparse_action(Some(ReparseKind::SymbolicLink)), Ok(()));
+        for kind in [Some(ReparseKind::Junction), Some(ReparseKind::Other), None] {
+            assert_eq!(
+                reparse_action(kind),
+                Err(OperationError::ReparsePointUnsupported),
+                "{kind:?} must stay skipped"
+            );
+        }
     }
 }

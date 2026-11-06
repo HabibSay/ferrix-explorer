@@ -5,12 +5,18 @@
 //! `InvokeCommand`, and a native popup menu. Neither registers a Shell extension nor touches the
 //! registry. All user-visible text is supplied by the caller.
 
+pub mod clipboard;
 pub mod execute;
+pub mod file_time;
 pub mod icons;
+pub mod recycle;
+pub mod recycle_quota;
+pub mod symlink;
+pub mod volume;
 
 use windows::{
     Win32::{
-        Foundation::{E_NOTIMPL, E_POINTER, HWND, POINTL},
+        Foundation::{E_NOTIMPL, E_POINTER, HWND, POINT, POINTL},
         System::{
             Com::IDataObject,
             Ole::{
@@ -22,8 +28,8 @@ use windows::{
         UI::{
             Shell::{CMF_DEFAULTONLY, CMINVOKECOMMANDINFO, IContextMenu, IContextMenu_Impl},
             WindowsAndMessaging::{
-                AppendMenuW, CreatePopupMenu, DestroyMenu, HMENU, MF_STRING, TPM_RETURNCMD,
-                TrackPopupMenu,
+                AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, HMENU, MF_STRING,
+                TPM_RETURNCMD, TrackPopupMenu,
             },
         },
     },
@@ -264,5 +270,53 @@ pub fn show_context_menu(hwnd: HWND, x: i32, y: i32, label: &str) -> Result<Cont
         };
         context_menu.InvokeCommand(&info)?;
         Ok(ContextMenuSelection::About)
+    }
+}
+
+/// Screen position of the cursor, used to anchor app-local popups.
+pub fn cursor_pos() -> (i32, i32) {
+    let mut point = POINT { x: 0, y: 0 };
+    // SAFETY: `point` is a valid writable struct on this stack; GetCursorPos fills it
+    // or leaves it untouched on failure.
+    let ok = unsafe { GetCursorPos(&mut point) };
+    if ok.is_err() {
+        (0, 0)
+    } else {
+        (point.x, point.y)
+    }
+}
+
+/// Show a plain (non-COM) popup menu with the given labels at screen `(x, y)` and
+/// return the index of the clicked item, or `None` when dismissed.
+///
+/// Must be called on the UI thread with a valid `hwnd`; `TPM_RETURNCMD` keeps the
+/// call synchronous, so no message-loop plumbing is needed.
+pub fn show_popup_menu(hwnd: HWND, x: i32, y: i32, items: &[&str]) -> Result<Option<usize>> {
+    const ITEM_BASE: u32 = 0x5000;
+    // SAFETY: The menu is destroyed on every path before returning; TrackPopupMenu
+    // runs modally on this UI thread and the returned command id is within the
+    // range [ITEM_BASE, ITEM_BASE + items.len()) we just added.
+    unsafe {
+        let menu = CreatePopupMenu()?;
+        for (index, label) in items.iter().enumerate() {
+            let wide: Vec<u16> = label.encode_utf16().chain(std::iter::once(0)).collect();
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING,
+                (ITEM_BASE + index as u32) as usize,
+                PCWSTR(wide.as_ptr()),
+            );
+        }
+        let selected = TrackPopupMenu(menu, TPM_RETURNCMD, x, y, None, hwnd, None);
+        let _ = DestroyMenu(menu);
+        if selected.0 == 0 {
+            return Ok(None);
+        }
+        let offset = selected.0 as u32 - ITEM_BASE;
+        if (offset as usize) < items.len() {
+            Ok(Some(offset as usize))
+        } else {
+            Ok(None)
+        }
     }
 }

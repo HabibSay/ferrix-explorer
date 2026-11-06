@@ -2,7 +2,7 @@
 
 A fast, keyboard-first file explorer for Windows 10 and 11, written in Rust.
 
-> **Status:** Active development — Tranche 1 (basic navigation) is complete. The project is not yet ready for end-user distribution; see [License and distribution](#license-and-distribution) for the blockers.
+> **Status:** Active development — Tranche 1 (basic navigation) is complete and Tranche 2 (file operations) is implemented on branch `tranche-2-file-operations`; the Shell-validation checklist in `docs/tranche-2-validation.md` still needs its Windows sign-off. The project is not yet ready for end-user distribution; see [License and distribution](#license-and-distribution) for the blockers.
 
 ---
 
@@ -25,7 +25,6 @@ Ferrix Explorer aims to replace Windows Explorer for power users who want speed,
 
 These are explicitly out of scope until later tranches:
 
-- Write operations: copy, move, rename, delete (Tranche 2)
 - Native Shell context menus via `IContextMenu` (Tranche 3)
 - Sidebar/tree, tabs, multi-pane (Tranches 4–5)
 - Search and indexing (Tranche 6)
@@ -43,7 +42,9 @@ crates/
                     SortKey, FilterQuery, keyboard shortcut map — no UI, no I/O
   fx-fs/            Filesystem layer: streaming jwalk listing, notify watcher,
                     long-path helpers — no UI
-  fx-ops/           File operations (copy/move/delete) — Tranche 2, stub only
+  fx-ops/           File-operations engine (Tranche 2): plan, transfer with
+                    conflict policy, rename/create/delete, checksums, undo,
+                    cleaner — no Win32
   fx-ui/            Slint UI: ApplicationWindow, FileList, DetailsTable,
                     AddressBar, Breadcrumb, SubfolderMenu, view model
   fx-shell/         Win32/COM interop: SHGetFileInfo icons, ShellExecute,
@@ -113,7 +114,7 @@ CI runs these automatically on every push and pull request (see [`.github/workfl
 
 ---
 
-## Keyboard shortcuts (Tranche 1)
+## Keyboard shortcuts (Tranche 1 + 2)
 
 | Action | Shortcut |
 |---|---|
@@ -124,8 +125,18 @@ CI runs these automatically on every push and pull request (see [`.github/workfl
 | Refresh | `F5` |
 | Select all | `Ctrl+A` |
 | Open file / enter folder | `Enter` or double-click |
+| Copy / cut / paste | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` |
+| Rename inline | `F2` |
+| Delete to Recycle Bin | `Del` |
+| Permanent delete (confirmed) | `Shift+Del` |
+| New folder | `Ctrl+Shift+N` |
+| Undo / redo | `Ctrl+Z` / `Ctrl+Y` |
 
-Mouse back/forward buttons are also wired to history navigation.
+Mouse back/forward buttons are also wired to history navigation. Right-click (or
+`Shift+F10`) opens the app-local menu: checksums (when a selection exists), select by
+pattern, invert selection, new file, clean empty folders. Internal drag-and-drop:
+`Ctrl` copies, `Shift` moves, no modifier follows Explorer's same-volume move /
+cross-volume copy rule.
 
 ---
 

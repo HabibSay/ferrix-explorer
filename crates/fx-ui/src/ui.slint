@@ -1,11 +1,14 @@
 import { ListView } from "std-widgets.slint";
 import { Strings } from "resources/en-US.slint";
+import { ConflictDialog, DeleteConfirmation, PatternSelection, ChecksumSheet, ChecksumRow } from "dialogs.slint";
+import { ActivityCenter, ActivityRow } from "activity.slint";
 
 // Represents a single file entry in the list.
 struct FileRow {
     id: int,
     display-name: string,
     kind: string,      // "Folder" | "File" | "Symlink" | "Reparse Point"
+    is-folder: bool,   // behaviour flag: drop targets branch on this, not on `kind`
     size-text: string,
     modified-text: string,
     type-text: string,
@@ -29,9 +32,19 @@ struct ColumnSpec {
 // A single row in the file list.
 component FileListItem inherits Rectangle {
     in property <FileRow> entry;
+    in property <data-transfer> drag-payload;
+    in property <bool> editing;
+    in property <string> seed-text;
+    in property <int> seed-selection;
+    property <string> editing-error: "";
     callback activated();
     callback selected(bool, bool);  // ctrl, shift
     callback context-menu(length, length);
+    callback drag-armed();
+    callback dropped-on-folder(data-transfer, int);
+    callback rename-committed(string);
+    callback rename-cancelled();
+    callback rename-validate(string) -> string;
 
     height: 22px;
     background: self.entry.selected ? #0078d7 : Colors.transparent;
@@ -41,10 +54,36 @@ component FileListItem inherits Rectangle {
         + (self.entry.selected ? ", selected" : "");
     accessible-action-default => { root.activated(); }
 
+    // Drag source: a press past the threshold starts with the bound payload.
+    drag := DragArea {
+        allow-copy: true;
+        allow-move: true;
+        data: root.drag-payload;
+    }
+
+    // Drop target: folders accept drops; the negotiated action comes from the
+    // modifier-aware proposed action.
+    row-drop := DropArea {
+        enabled: root.entry.is-folder;
+        can-drop(event) => {
+            return event.proposed-action;
+        }
+        dropped(event) => {
+            let code = event.proposed-action == DragAction.copy ? 1 : 2;
+            root.dropped-on-folder(event.data, code);
+            return event.proposed-action;
+        }
+    }
+
     touch := TouchArea {
         double-clicked => { root.activated(); }
         clicked => { root.selected(false, false); }
         pointer-event(event) => {
+            if (event.button == PointerEventButton.left
+                    && event.kind == PointerEventKind.down) {
+                // Arm the payload before the runtime crosses the drag threshold.
+                root.drag-armed();
+            }
             if (event.button == PointerEventButton.right
                     && event.kind == PointerEventKind.up) {
                 root.context-menu(self.mouse-x, self.mouse-y);
@@ -62,6 +101,65 @@ component FileListItem inherits Rectangle {
             overflow: elide;
         }
     }
+
+    // Inline rename editor, anchored to this row so it follows the list scroll and never
+    // sits on the wrong entry when the user scrolls while F2 is open.
+    if self.editing: Rectangle {
+        x: 2px;
+        y: 1px;
+        width: parent.width - 4px;
+        height: parent.height - 2px;
+        background: #ffffff;
+        border-color: root.editing-error != "" ? #d13438 : #0078d7;
+        border-width: 2px;
+
+        init => {
+            root.editing-error = "";
+            rename-field.text = root.seed-text;
+            rename-field.focus();
+            rename-field.set-selection-offsets(0, root.seed-selection);
+        }
+
+        rename-field := TextInput {
+            x: 2px;
+            y: 1px;
+            width: parent.width - 34px;
+            height: parent.height - 2px;
+            vertical-alignment: center;
+            accessible-role: text-input;
+            accessible-label: Strings.rename-input-label;
+            edited => {
+                root.editing-error = root.rename-validate(self.text);
+            }
+            accepted => {
+                root.rename-committed(self.text);
+            }
+            key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    root.rename-cancelled();
+                    return accept;
+                }
+                reject
+            }
+        }
+
+        rename-ok := TouchArea {
+            x: parent.width - 30px;
+            y: 1px;
+            width: 28px;
+            height: parent.height - 2px;
+            accessible-role: button;
+            accessible-label: Strings.rename-confirm-label;
+            clicked => {
+                root.rename-committed(rename-field.text);
+            }
+            Text {
+                text: "✓";
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
 }
 
 // ── FileList ──────────────────────────────────────────────────────────────────
@@ -69,18 +167,52 @@ component FileListItem inherits Rectangle {
 // Virtualized list component.
 component FileList inherits Rectangle {
     in property <[FileRow]> rows: [];
+    in-out property <data-transfer> drag-payload;
+    in property <int> rename-target-id: -1;
+    in property <string> rename-seed-text;
+    in property <int> rename-seed-selection;
     callback row-activated(int);
     callback row-selected(int, bool, bool);
     callback context-menu-requested(int, length, length);
+    callback drag-pressed(int) -> data-transfer;
+    callback drop-on-folder(int, data-transfer, int) -> int;
+    callback rename-committed(int, string);
+    callback rename-cancelled(int);
+    callback rename-validate(string) -> string;
 
     accessible-role: list;
+
+    // Drop onto the current folder itself (empty background of the list).
+    bg-drop := DropArea {
+        can-drop(event) => {
+            return event.proposed-action;
+        }
+        dropped(event) => {
+            let code = event.proposed-action == DragAction.copy ? 1 : 2;
+            root.drop-on-folder(-1, event.data, code);
+            return event.proposed-action;
+        }
+    }
 
     ListView {
         for file-row[i] in rows: FileListItem {
             entry: file-row;
+            drag-payload: root.drag-payload;
+            editing: file-row.id == root.rename-target-id;
+            seed-text: root.rename-seed-text;
+            seed-selection: root.rename-seed-selection;
             activated => { root.row-activated(file-row.id); }
             selected(ctrl, shift) => { root.row-selected(file-row.id, ctrl, shift); }
             context-menu(x, y) => { root.context-menu-requested(file-row.id, x, y); }
+            drag-armed => { root.drag-payload = root.drag-pressed(file-row.id); }
+            dropped-on-folder(data, code) => {
+                root.drop-on-folder(file-row.id, data, code);
+            }
+            rename-committed(text) => { root.rename-committed(file-row.id, text); }
+            rename-cancelled() => { root.rename-cancelled(file-row.id); }
+            rename-validate(text) => {
+                return root.rename-validate(text);
+            }
         }
     }
 }
@@ -208,6 +340,7 @@ component DetailsTable inherits VerticalLayout {
 component AddressBar inherits Rectangle {
     in property <string> current-path: "";
     in property <[string]> completions: [];
+    out property <bool> input-has-focus: addr-input.has-focus;
     callback confirmed(string);
 
     // Let the parent focus the inner TextInput.
@@ -420,6 +553,56 @@ export component ApplicationWindow inherits Window {
     in property <[string]> subfolder-items: [];
     in-out property <bool> subfolder-menu-visible: false;
 
+    // Tranche 2: enriched status bar properties
+    in property <string> status-item-count: "";
+    in property <string> status-selected-count: "";
+    in property <string> status-selected-bytes: "";
+    in property <string> status-free-space: "";
+
+    // Tranche 2: inline rename overlay
+    // -1 means no rename is in progress.
+    in property <int> status-rename-target-id: -1;
+    in property <string> rename-seed-text;
+    in property <int> rename-seed-selection: 0;
+    callback rename-committed(int, string);
+    callback rename-cancelled(int);
+    callback rename-validate(string) -> string;
+
+    // Tranche 2: activity center rows
+    in property <[ActivityRow]> activity-rows: [];
+
+    // Tranche 2: permanent-delete confirmation gate (Shift+Del)
+    in-out property <bool> confirm-permanent-delete: false;
+    in property <string> permanent-delete-count-text: "";
+
+    // Tranche 2: conflict resolution dialog (OPS-09)
+    in-out property <bool> show-conflict-dialog: false;
+    in property <string> conflict-file-name: "";
+    in property <string> conflict-source-path: "";
+    in property <string> conflict-source-size: "";
+    in property <string> conflict-source-modified: "";
+    in property <string> conflict-destination-path: "";
+    in property <string> conflict-destination-size: "";
+    in property <string> conflict-destination-modified: "";
+
+    // Tranche 2: checksum results panel (OPS-12, non-modal)
+    in-out property <bool> show-checksum-sheet: false;
+    in property <[ChecksumRow]> checksum-rows: [];
+
+    // Tranche 2: pattern selection (OPS-11) and cleaner confirmation (OPS-13)
+    in-out property <bool> show-pattern-dialog: false;
+    in-out property <bool> confirm-empty-clean: false;
+    in property <string> empty-clean-count-text: "";
+
+    // Tranche 2: internal drag-and-drop (OPS-06). The payload is built by the host
+    // when a row press arms a drag; data-transfer stays opaque to Slint code.
+    in-out property <data-transfer> drag-payload;
+    callback row-drag-pressed(int) -> data-transfer;
+    callback drop-requested(data-transfer, int, int) -> int;
+    callback pattern-submitted(string);
+    callback pattern-cancelled();
+    callback empty-clean-answered(bool);
+
     // ── Callbacks ────────────────────────────────────────────────────────────
     callback navigate-to(string);
     callback row-activated(int);
@@ -440,9 +623,23 @@ export component ApplicationWindow inherits Window {
     // Column resize/reorder
     callback column-resize-requested(int, length);
     callback column-reorder-requested(int, int);
+    // Activity center
+    callback activity-pause-op(int);
+    callback activity-resume-op(int);
+    callback activity-cancel-op(int);
+    callback activity-retry-op(int);
+    // Tranche 2: keyboard dispatch — (text, ctrl, shift, alt); true when the host handled it.
+    callback shortcut-key(string, bool, bool, bool) -> bool;
+    // Tranche 2: permanent-delete confirmation result
+    callback permanent-delete-confirmed();
+    callback permanent-delete-cancelled();
+    // Tranche 2: conflict dialog result — (choice id, apply-to-all-in-class)
+    callback conflict-resolved(string, bool);
 
     // ── Global keyboard handler ──────────────────────────────────────────────
-    FocusScope {
+    main-scope := FocusScope {
+        // Keyboard-only path: shortcuts work from launch, before any click.
+        init => { main-scope.focus(); }
         key-pressed(event) => {
             if (event.modifiers.alt && event.text == Key.LeftArrow) {
                 root.navigate-back();
@@ -456,8 +653,8 @@ export component ApplicationWindow inherits Window {
                 root.navigate-up();
                 return accept;
             }
-            // F5 key — Slint maps it to "\u{F705}" in event.text.
-            if (event.text == "\u{F705}") {
+            // F5 key — Slint maps it to "\u{F708}" in event.text (F705 is F2).
+            if (event.text == "\u{F708}") {
                 root.navigate-refresh();
                 return accept;
             }
@@ -470,6 +667,16 @@ export component ApplicationWindow inherits Window {
                 addr-bar.focus-input();
                 root.focus-address-bar();
                 return accept;
+            }
+            // Tranche 2: forward file-operation shortcuts to the host dispatcher.
+            // Never hijack text editing (address bar, inline rename) or a pending dialog.
+            if (root.status-rename-target-id == -1 && !root.confirm-permanent-delete
+                    && !root.show-conflict-dialog && !root.show-pattern-dialog
+                    && !root.confirm-empty-clean && !addr-bar.input-has-focus) {
+                if (root.shortcut-key(event.text, event.modifiers.control,
+                        event.modifiers.shift, event.modifiers.alt)) {
+                    return accept;
+                }
             }
             reject
         }
@@ -506,25 +713,305 @@ export component ApplicationWindow inherits Window {
             }
 
             // Virtualized file list
-            FileList {
+            file-list-area := Rectangle {
                 vertical-stretch: 1;
-                rows: root.rows;
-                row-activated(id) => { root.row-activated(id); }
-                row-selected(id, ctrl, shift) => { root.row-selected(id, ctrl, shift); }
-                context-menu-requested(id, x, y) => { root.context-menu-requested(id, x, y); }
+
+                FileList {
+                    width: 100%;
+                    height: 100%;
+                    rows: root.rows;
+                    drag-payload: root.drag-payload;
+                    row-activated(id) => { root.row-activated(id); }
+                    row-selected(id, ctrl, shift) => {
+                        // The row's TouchArea absorbs the press; take keyboard focus
+                        // explicitly so file shortcuts work after clicking a row.
+                        main-scope.focus();
+                        root.row-selected(id, ctrl, shift);
+                    }
+                    context-menu-requested(id, x, y) => { root.context-menu-requested(id, x, y); }
+                    drag-pressed(id) => {
+                        return root.row-drag-pressed(id);
+                    }
+                    drop-on-folder(id, data, code) => {
+                        return root.drop-requested(data, code, id);
+                    }
+                    rename-target-id: root.status-rename-target-id;
+                    rename-seed-text: root.rename-seed-text;
+                    rename-seed-selection: root.rename-seed-selection;
+                    rename-committed(id, text) => {
+                        root.rename-committed(id, text);
+                        main-scope.focus();
+                    }
+                    rename-cancelled(id) => {
+                        root.rename-cancelled(id);
+                        main-scope.focus();
+                    }
+                    rename-validate(text) => {
+                        return root.rename-validate(text);
+                    }
+                }
             }
 
-            // Status bar
+            // Activity center
+            ActivityCenter {
+                rows: root.activity-rows;
+                pause-op(i) => { root.activity-pause-op(i); }
+                resume-op(i) => { root.activity-resume-op(i); }
+                cancel-op(i) => { root.activity-cancel-op(i); }
+                retry-op(i) => { root.activity-retry-op(i); }
+            }
+
+            // Enriched status bar
             Rectangle {
                 height: 22px;
                 background: #f8f8f8;
                 accessible-role: none;
                 accessible-label: root.status-message;
-                Text {
-                    x: 4px;
-                    text: root.status-message;
-                    vertical-alignment: center;
-                    horizontal-alignment: left;
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    padding-left: 4px;
+                    padding-right: 4px;
+
+                    Text {
+                        text: root.status-message;
+                        vertical-alignment: center;
+                        horizontal-alignment: left;
+                        overflow: elide;
+                        horizontal-stretch: 2;
+                    }
+
+                    Text {
+                        text: root.status-item-count;
+                        vertical-alignment: center;
+                        horizontal-alignment: left;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+
+                    if root.status-selected-count != "": Text {
+                        text: root.status-selected-count;
+                        vertical-alignment: center;
+                        horizontal-alignment: right;
+                    }
+
+                    if root.status-selected-bytes != "": Text {
+                        text: root.status-selected-bytes;
+                        vertical-alignment: center;
+                        horizontal-alignment: right;
+                    }
+
+                    if root.status-free-space != "": Text {
+                        text: root.status-free-space;
+                        vertical-alignment: center;
+                        horizontal-alignment: right;
+                    }
+                }
+            }
+        }
+
+        // Permanent-delete confirmation (Shift+Del): explicit gate before anything is
+        // destroyed (PRD 14.2). The backdrop absorbs clicks; Escape cancels.
+        if root.confirm-permanent-delete: Rectangle {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            background: #00000066;
+            TouchArea {}
+
+            confirm-scope := FocusScope {
+                x: (parent.width - 420px) / 2;
+                y: (parent.height - 200px) / 2;
+                width: 420px;
+                height: 200px;
+                init => { confirm-scope.focus(); }
+                key-pressed(event) => {
+                    if (event.text == Key.Escape) {
+                        root.confirm-permanent-delete = false;
+                        root.permanent-delete-cancelled();
+                        return accept;
+                    }
+                    reject
+                }
+
+                DeleteConfirmation {
+                    width: 100%;
+                    height: 100%;
+                    item-count-text: root.permanent-delete-count-text;
+                    confirmed => {
+                        root.confirm-permanent-delete = false;
+                        root.permanent-delete-confirmed();
+                    }
+                    cancelled => {
+                        root.confirm-permanent-delete = false;
+                        root.permanent-delete-cancelled();
+                    }
+                }
+            }
+        }
+
+        // Conflict resolution (OPS-09): modal overlay; the worker stays paused until
+        // an answer. Escape closes and answers cancel, like any abandoned dialog.
+        if root.show-conflict-dialog: Rectangle {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            background: #00000066;
+            TouchArea {}
+
+            conflict-scope := FocusScope {
+                x: (parent.width - 460px) / 2;
+                y: (parent.height - 320px) / 2;
+                width: 460px;
+                height: 320px;
+                init => { conflict-scope.focus(); }
+                key-pressed(event) => {
+                    if (event.text == Key.Escape) {
+                        root.show-conflict-dialog = false;
+                        root.conflict-resolved("cancel", false);
+                        return accept;
+                    }
+                    reject
+                }
+
+                conflict-dialog := ConflictDialog {
+                    width: 100%;
+                    height: 100%;
+                    file-name: root.conflict-file-name;
+                    source-path: root.conflict-source-path;
+                    source-size: root.conflict-source-size;
+                    source-modified: root.conflict-source-modified;
+                    destination-path: root.conflict-destination-path;
+                    destination-size: root.conflict-destination-size;
+                    destination-modified: root.conflict-destination-modified;
+                    replace => {
+                        root.show-conflict-dialog = false;
+                        root.conflict-resolved("replace", conflict-dialog.apply-to-all);
+                    }
+                    skip => {
+                        root.show-conflict-dialog = false;
+                        root.conflict-resolved("skip", conflict-dialog.apply-to-all);
+                    }
+                    keep-both => {
+                        root.show-conflict-dialog = false;
+                        root.conflict-resolved("keep-both", conflict-dialog.apply-to-all);
+                    }
+                    cancel => {
+                        root.show-conflict-dialog = false;
+                        root.conflict-resolved("cancel", false);
+                    }
+                }
+            }
+        }
+
+        // Tranche 2: select-by-pattern (OPS-11).
+        if root.show-pattern-dialog: Rectangle {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            background: #00000066;
+            TouchArea {}
+
+            pattern-scope := FocusScope {
+                x: (parent.width - 360px) / 2;
+                y: (parent.height - 180px) / 2;
+                width: 360px;
+                height: 180px;
+                init => { pattern-scope.focus(); }
+                key-pressed(event) => {
+                    if (event.text == Key.Escape) {
+                        root.show-pattern-dialog = false;
+                        root.pattern-cancelled();
+                        return accept;
+                    }
+                    reject
+                }
+
+                PatternSelection {
+                    width: 100%;
+                    height: 100%;
+                    selected(pattern) => {
+                        root.show-pattern-dialog = false;
+                        root.pattern-submitted(pattern);
+                    }
+                    cancelled => {
+                        root.show-pattern-dialog = false;
+                        root.pattern-cancelled();
+                    }
+                }
+            }
+        }
+
+        // Tranche 2: empty-folder cleaner confirmation (OPS-13, report-first).
+        if root.confirm-empty-clean: Rectangle {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            background: #00000066;
+            TouchArea {}
+
+            clean-scope := FocusScope {
+                x: (parent.width - 420px) / 2;
+                y: (parent.height - 200px) / 2;
+                width: 420px;
+                height: 200px;
+                init => { clean-scope.focus(); }
+                key-pressed(event) => {
+                    if (event.text == Key.Escape) {
+                        root.confirm-empty-clean = false;
+                        root.empty-clean-answered(false);
+                        return accept;
+                    }
+                    reject
+                }
+
+                DeleteConfirmation {
+                    width: 100%;
+                    height: 100%;
+                    item-count-text: root.empty-clean-count-text;
+                    confirmed => {
+                        root.confirm-empty-clean = false;
+                        root.empty-clean-answered(true);
+                    }
+                    cancelled => {
+                        root.confirm-empty-clean = false;
+                        root.empty-clean-answered(false);
+                    }
+                }
+            }
+        }
+
+        // Tranche 2: checksum results (OPS-12 "menu and panel"). Deliberately
+        // non-modal: browsing continues while digests are on screen.
+        if root.show-checksum-sheet: Rectangle {
+            x: (parent.width - 640px) / 2;
+            y: (parent.height - 340px) / 2;
+            width: 640px;
+            height: 340px;
+            border-color: #cccccc;
+            border-width: 1px;
+
+            checksum-scope := FocusScope {
+                width: 100%;
+                height: 100%;
+                init => { checksum-scope.focus(); }
+                key-pressed(event) => {
+                    if (event.text == Key.Escape) {
+                        root.show-checksum-sheet = false;
+                        return accept;
+                    }
+                    reject
+                }
+
+                ChecksumSheet {
+                    width: 100%;
+                    height: 100%;
+                    rows: root.checksum-rows;
+                    closed => { root.show-checksum-sheet = false; }
                 }
             }
         }

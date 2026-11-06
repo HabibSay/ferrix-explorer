@@ -68,8 +68,13 @@ fn scan_children(
     Ok(empty)
 }
 
-pub fn clean(root: &Path, plan: &CleanPlan, control: &OperationControl) -> OperationSummary {
-    let mut summary = OperationSummary::new(OperationId::next(), OperationKind::CleanEmptyFolders);
+pub fn clean(
+    id: OperationId,
+    root: &Path,
+    plan: &CleanPlan,
+    control: &OperationControl,
+) -> OperationSummary {
+    let mut summary = OperationSummary::new(id, OperationKind::CleanEmptyFolders);
     let mut cancelled = false;
 
     for directory in &plan.directories {
@@ -152,7 +157,7 @@ mod tests {
         // A file appears between the scan and the confirmation.
         fs::write(becomes_full.join("late.txt"), b"x").unwrap();
 
-        let summary = clean(root, &plan, &OperationControl::new());
+        let summary = clean(OperationId::next(), root, &plan, &OperationControl::new());
         assert_eq!(summary.files_done, 1);
         assert_eq!(summary.files_skipped, 1);
         assert!(!empty.exists());

@@ -128,6 +128,18 @@ impl Shortcut {
             key,
         }
     }
+
+    const fn ctrl_shift(key: Key) -> Self {
+        Shortcut {
+            modifiers: Modifiers {
+                ctrl: true,
+                alt: false,
+                shift: true,
+                win: false,
+            },
+            key,
+        }
+    }
 }
 
 // ── ShortcutAction ────────────────────────────────────────────────────────────
@@ -148,11 +160,16 @@ pub enum ShortcutAction {
     Copy,
     Paste,
     Properties,
+    // Tranche 2 additions
+    Undo,
+    Redo,
+    CreateFolder,
+    PermanentDelete,
 }
 
 // ── Default shortcut map ──────────────────────────────────────────────────────
 
-/// Returns the default shortcut-to-action mapping for Tranche 1.
+/// Returns the default shortcut-to-action mapping for Tranche 1 + Tranche 2.
 pub fn default_shortcuts() -> Vec<(Shortcut, ShortcutAction)> {
     vec![
         (Shortcut::alt(Key::Left), ShortcutAction::NavigateBack),
@@ -163,6 +180,19 @@ pub fn default_shortcuts() -> Vec<(Shortcut, ShortcutAction)> {
         (Shortcut::alt(Key::D), ShortcutAction::FocusAddressBar),
         (Shortcut::ctrl(Key::A), ShortcutAction::SelectAll),
         (Shortcut::shift(Key::F10), ShortcutAction::ContextMenu),
+        // Tranche 2 shortcuts
+        (Shortcut::ctrl(Key::Z), ShortcutAction::Undo),
+        (Shortcut::ctrl(Key::Y), ShortcutAction::Redo),
+        (Shortcut::ctrl_shift(Key::N), ShortcutAction::CreateFolder),
+        (
+            Shortcut::shift(Key::Delete),
+            ShortcutAction::PermanentDelete,
+        ),
+        (Shortcut::bare(Key::Delete), ShortcutAction::Delete),
+        (Shortcut::bare(Key::F2), ShortcutAction::Rename),
+        (Shortcut::ctrl(Key::C), ShortcutAction::Copy),
+        (Shortcut::ctrl(Key::X), ShortcutAction::Cut),
+        (Shortcut::ctrl(Key::V), ShortcutAction::Paste),
     ]
 }
 
@@ -225,5 +255,92 @@ mod tests {
         for (s, _) in &map {
             assert!(seen.insert(s), "Duplicate shortcut: {s:?}");
         }
+    }
+
+    #[test]
+    fn ctrl_z_maps_to_undo() {
+        let map = default_shortcuts();
+        let found = map.iter().any(|(s, a)| {
+            *a == ShortcutAction::Undo && s.modifiers.ctrl && !s.modifiers.shift && s.key == Key::Z
+        });
+        assert!(found, "Ctrl+Z → Undo not found");
+    }
+
+    #[test]
+    fn ctrl_y_maps_to_redo() {
+        let map = default_shortcuts();
+        let found = map
+            .iter()
+            .any(|(s, a)| *a == ShortcutAction::Redo && s.modifiers.ctrl && s.key == Key::Y);
+        assert!(found, "Ctrl+Y → Redo not found");
+    }
+
+    #[test]
+    fn ctrl_shift_n_maps_to_create_folder() {
+        let map = default_shortcuts();
+        let found = map.iter().any(|(s, a)| {
+            *a == ShortcutAction::CreateFolder
+                && s.modifiers.ctrl
+                && s.modifiers.shift
+                && s.key == Key::N
+        });
+        assert!(found, "Ctrl+Shift+N → CreateFolder not found");
+    }
+
+    #[test]
+    fn shift_delete_maps_to_permanent_delete() {
+        let map = default_shortcuts();
+        let found = map.iter().any(|(s, a)| {
+            *a == ShortcutAction::PermanentDelete && s.modifiers.shift && s.key == Key::Delete
+        });
+        assert!(found, "Shift+Del → PermanentDelete not found");
+    }
+
+    #[test]
+    fn delete_maps_to_delete() {
+        let map = default_shortcuts();
+        let found = map.iter().any(|(s, a)| {
+            *a == ShortcutAction::Delete && !s.modifiers.shift && s.key == Key::Delete
+        });
+        assert!(found, "Del → Delete not found");
+    }
+
+    #[test]
+    fn f2_maps_to_rename() {
+        let map = default_shortcuts();
+        let found = map.iter().any(|(s, a)| {
+            *a == ShortcutAction::Rename
+                && !s.modifiers.ctrl
+                && !s.modifiers.shift
+                && s.key == Key::F2
+        });
+        assert!(found, "F2 → Rename not found");
+    }
+
+    #[test]
+    fn ctrl_c_maps_to_copy() {
+        let map = default_shortcuts();
+        let found = map
+            .iter()
+            .any(|(s, a)| *a == ShortcutAction::Copy && s.modifiers.ctrl && s.key == Key::C);
+        assert!(found, "Ctrl+C → Copy not found");
+    }
+
+    #[test]
+    fn ctrl_x_maps_to_cut() {
+        let map = default_shortcuts();
+        let found = map
+            .iter()
+            .any(|(s, a)| *a == ShortcutAction::Cut && s.modifiers.ctrl && s.key == Key::X);
+        assert!(found, "Ctrl+X → Cut not found");
+    }
+
+    #[test]
+    fn ctrl_v_maps_to_paste() {
+        let map = default_shortcuts();
+        let found = map
+            .iter()
+            .any(|(s, a)| *a == ShortcutAction::Paste && s.modifiers.ctrl && s.key == Key::V);
+        assert!(found, "Ctrl+V → Paste not found");
     }
 }

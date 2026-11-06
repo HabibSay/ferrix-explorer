@@ -5,7 +5,7 @@ use std::{
     collections::VecDeque,
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -14,7 +14,10 @@ use fx_ops::{
     conflict::{ConflictAnswer, ConflictChoice, ConflictRequest, ConflictResolver, FixedResolver},
     control::OperationControl,
     plan::plan_transfer,
-    port::{PlatformOps, RecycleError, RecyclePrecheck, RecycledItem, RestoreError, VolumeKind},
+    port::{
+        PlatformOps, RecycleError, RecyclePrecheck, RecycledItem, ReparseKind, RestoreError,
+        VolumeKind,
+    },
 };
 
 struct TestPlatform {
@@ -25,6 +28,11 @@ struct TestPlatform {
     fail_replace: bool,
     free_bytes: u64,
     recycle_dir: PathBuf,
+    /// Paths the fake platform classifies as symbolic links, respectively junctions.
+    symlinks: Vec<PathBuf>,
+    junctions: Vec<PathBuf>,
+    /// Links the engine asked the platform to create: `(target, link, is_dir)`.
+    created: Arc<Mutex<Vec<(PathBuf, PathBuf, bool)>>>,
 }
 
 impl TestPlatform {
@@ -36,11 +44,24 @@ impl TestPlatform {
             fail_replace: false,
             free_bytes: u64::MAX,
             recycle_dir: root.join(".recycle"),
+            symlinks: Vec::new(),
+            junctions: Vec::new(),
+            created: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     fn with_free_space(mut self, bytes: u64) -> Self {
         self.free_bytes = bytes;
+        self
+    }
+
+    fn classified_as_symlink(mut self, paths: &[PathBuf]) -> Self {
+        self.symlinks = paths.to_vec();
+        self
+    }
+
+    fn classified_as_junction(mut self, paths: &[PathBuf]) -> Self {
+        self.junctions = paths.to_vec();
         self
     }
 }
@@ -114,6 +135,26 @@ impl PlatformOps for TestPlatform {
             return Err(std::io::Error::other("simulated metadata failure"));
         }
         fx_ops::port::std_apply_metadata(from, to)
+    }
+
+    fn reparse_kind(&self, path: &Path) -> Option<ReparseKind> {
+        if self.symlinks.iter().any(|link| link == path) {
+            return Some(ReparseKind::SymbolicLink);
+        }
+        if self.junctions.iter().any(|link| link == path) {
+            return Some(ReparseKind::Junction);
+        }
+        None
+    }
+
+    /// Records the request and leaves a marker file, so the assertions can tell a
+    /// recreated link apart from a copied payload.
+    fn create_symlink(&self, target: &Path, link: &Path, is_dir: bool) -> std::io::Result<()> {
+        self.created
+            .lock()
+            .unwrap()
+            .push((target.to_path_buf(), link.to_path_buf(), is_dir));
+        fs::write(link, format!("link to {}", target.display()))
     }
 }
 
@@ -191,6 +232,101 @@ fn copies_a_file_and_preserves_contents() {
     assert_eq!(summary.bytes_done, 5);
     assert_eq!(fs::read(destination.join("a.txt")).unwrap(), b"hello");
     assert!(source.exists(), "a copy never deletes the source");
+}
+
+/// Creates a file symlink, returning false when the host refuses: creating a symbolic
+/// link on Windows needs the SeCreateSymbolicLink privilege or Developer Mode.
+fn make_symlink(target: &Path, link: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_file(target, link).is_ok()
+    }
+    #[cfg(not(windows))]
+    {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+}
+
+#[test]
+fn a_symbolic_link_is_recreated_as_a_link_not_copied() {
+    let dir = tempfile::tempdir().unwrap();
+    let payload = dir.path().join("payload.txt");
+    write(&payload, b"payload");
+    let link = dir.path().join("link.txt");
+    if !make_symlink(&payload, &link) {
+        eprintln!("no symbolic link privilege on this host; nothing was verified");
+        return;
+    }
+    let destination = dir.path().join("dest");
+    fs::create_dir(&destination).unwrap();
+
+    let platform = TestPlatform::new(dir.path()).classified_as_symlink(std::slice::from_ref(&link));
+    let created = platform.created.clone();
+    let mut resolver = FixedResolver {
+        answer: ConflictAnswer::once(ConflictChoice::KeepBoth),
+    };
+    let summary = run(
+        std::slice::from_ref(&link),
+        &destination,
+        TransferKind::Copy,
+        &platform,
+        &OperationControl::new(),
+        &mut resolver,
+    );
+
+    assert_eq!(
+        created.lock().unwrap().clone(),
+        vec![(payload.clone(), destination.join("link.txt"), false)],
+        "the engine must ask the platform to recreate the link"
+    );
+    assert_eq!(summary.files_failed, 0, "{:?}", summary.failures);
+    assert_eq!(
+        fs::read(destination.join("link.txt")).unwrap(),
+        b"link to payload".as_slice(),
+        "the payload itself must not be copied"
+    );
+    assert!(link.exists(), "a copy never deletes the source");
+}
+
+#[test]
+fn a_junction_stays_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let payload = dir.path().join("elsewhere");
+    fs::create_dir(&payload).unwrap();
+    write(&payload.join("inside.txt"), b"inside");
+    let link = dir.path().join("junction");
+    if !make_symlink(&payload, &link) {
+        eprintln!("no symbolic link privilege on this host; nothing was verified");
+        return;
+    }
+    let destination = dir.path().join("dest");
+    fs::create_dir(&destination).unwrap();
+
+    let platform =
+        TestPlatform::new(dir.path()).classified_as_junction(std::slice::from_ref(&link));
+    let created = platform.created.clone();
+    let mut resolver = FixedResolver {
+        answer: ConflictAnswer::once(ConflictChoice::KeepBoth),
+    };
+    let summary = run(
+        std::slice::from_ref(&link),
+        &destination,
+        TransferKind::Copy,
+        &platform,
+        &OperationControl::new(),
+        &mut resolver,
+    );
+
+    assert!(
+        created.lock().unwrap().is_empty(),
+        "a junction must never be followed or recreated"
+    );
+    assert!(!destination.join("junction").exists());
+    assert_eq!(summary.files_failed, 1);
+    assert_eq!(
+        summary.failures[0].error,
+        OperationError::ReparsePointUnsupported
+    );
 }
 
 #[test]

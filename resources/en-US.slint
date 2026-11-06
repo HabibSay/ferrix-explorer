@@ -39,4 +39,70 @@ export global Strings {
     out property <string> forward-button-label: "Forward (Alt+Right)";
     out property <string> up-button-label: "Up (Alt+Up)";
     out property <string> refresh-button-label: "Refresh (F5)";
+
+    // Tranche 2 — inline rename
+    out property <string> rename-input-label: "Rename file";
+    out property <string> rename-confirm-label: "Confirm rename";
+
+    // Tranche 2 — conflict dialog (OPS-09)
+    out property <string> conflict-question-before: "A file with the name \"";
+    out property <string> conflict-question-after: "\" already exists. What would you like to do?";
+    out property <string> conflict-source-heading: "Source:";
+    out property <string> conflict-destination-heading: "Destination:";
+    out property <string> conflict-size-label: "Size:";
+    out property <string> conflict-modified-label: "Modified:";
+    out property <string> conflict-apply-to-all: "Apply to all similar conflicts";
+    out property <string> conflict-replace: "Replace";
+    out property <string> conflict-replace-label: "Replace existing file";
+    out property <string> conflict-skip: "Skip";
+    out property <string> conflict-skip-label: "Skip this file";
+    out property <string> conflict-keep-both: "Keep Both";
+    out property <string> conflict-keep-both-label: "Keep both files";
+
+    // Tranche 2 — destructive confirmations (delete permanently, clean empty folders)
+    out property <string> delete-question-before: "Are you sure you want to permanently delete ";
+    out property <string> delete-question-after: "?";
+    out property <string> delete-warning: "This action cannot be undone.";
+    out property <string> delete-warning-label: "Warning: this action cannot be undone.";
+    out property <string> delete-confirm: "Delete Permanently";
+    out property <string> delete-confirm-label: "Confirm permanent deletion";
+    out property <string> delete-cancel-label: "Cancel deletion";
+
+    // Tranche 2 — select by pattern (OPS-06)
+    out property <string> pattern-question: "Enter a glob pattern (e.g. *.txt):";
+    out property <string> pattern-input-label: "Glob pattern";
+    out property <string> pattern-select: "Select";
+    out property <string> pattern-select-label: "Select matching entries";
+    out property <string> pattern-cancel-label: "Cancel pattern selection";
+
+    // Tranche 2 — checksum sheet (OPS-12)
+    out property <string> checksum-col-path: "Path";
+    out property <string> checksum-col-name: "File";
+    out property <string> checksum-col-md5: "MD5";
+    out property <string> checksum-col-sha256: "SHA-256";
+    out property <string> checksum-col-blake3: "BLAKE3";
+    out property <string> checksum-close: "Close";
+    out property <string> checksum-close-label: "Close checksum sheet";
+
+    // Tranche 2 — activity center (OPS-10)
+    out property <string> activity-heading: "Activity";
+    out property <string> activity-expand-label: "Expand activity center";
+    out property <string> activity-collapse-label: "Collapse activity center";
+    out property <string> activity-pause: "Pause";
+    out property <string> activity-resume: "Resume";
+    out property <string> activity-pause-label: "Pause operation";
+    out property <string> activity-resume-label: "Resume operation";
+    out property <string> activity-retry: "Retry";
+    out property <string> activity-retry-label: "Retry failed items";
+    out property <string> activity-retry-disabled-label: "Retry - nothing failed";
+
+    // Tranche 2 — shared actions
+    out property <string> action-cancel: "Cancel";
+    out property <string> action-cancel-operation-label: "Cancel operation";
+
+    // Tranche 2 — entry kind column
+    out property <string> kind-folder: "Folder";
+    out property <string> kind-file: "File";
+    out property <string> kind-symlink: "Symlink";
+    out property <string> kind-reparse-point: "Reparse Point";
 }

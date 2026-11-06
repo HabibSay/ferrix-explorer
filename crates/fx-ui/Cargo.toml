@@ -12,5 +12,10 @@ slint.workspace = true
 [build-dependencies]
 slint-build.workspace = true
 
+[dev-dependencies]
+# Same Slint project and license as the pinned slint crate; already in Cargo.lock.
+# Test-only: gives headless key/pointer event injection for the keyboard wiring tests.
+i-slint-backend-testing = "=1.18.1"
+
 [lints]
 workspace = true

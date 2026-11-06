@@ -109,3 +109,125 @@ pub const UP_BUTTON_LABEL: &str = "Up (Alt+Up)";
 
 /// Tooltip for the refresh button.
 pub const REFRESH_BUTTON_LABEL: &str = "Refresh (F5)";
+
+// ── Tranche 2 — file operations ───────────────────────────────────────────────
+
+/// Activity row and menu label: paste from the clipboard.
+pub const ACTIVITY_PASTE: &str = "Paste";
+
+/// Activity row label: send the selection to the Recycle Bin.
+pub const ACTIVITY_RECYCLE: &str = "Recycle";
+
+/// Activity row label: permanent deletion.
+pub const ACTIVITY_DELETE_PERMANENTLY: &str = "Delete permanently";
+
+/// Activity row label: rename.
+pub const ACTIVITY_RENAME: &str = "Rename";
+
+/// Activity row label and default name: new folder.
+pub const ACTIVITY_NEW_FOLDER: &str = "New folder";
+
+/// Activity row label: new file.
+pub const ACTIVITY_NEW_FILE: &str = "New file";
+
+/// Activity row label: undo.
+pub const ACTIVITY_UNDO: &str = "Undo";
+
+/// Activity row label: redo.
+pub const ACTIVITY_REDO: &str = "Redo";
+
+/// Activity row and menu label: checksums.
+pub const ACTIVITY_CHECKSUMS: &str = "Checksums";
+
+/// Activity row label: the read-only pass of the empty-folder cleaner.
+pub const ACTIVITY_CLEAN_SCAN: &str = "Clean empty folders (scan)";
+
+/// Activity row and menu label: the destructive pass of the cleaner.
+pub const ACTIVITY_CLEAN: &str = "Clean empty folders";
+
+/// Prefix of a retry row label, e.g. "Retry Paste".
+pub const ACTIVITY_RETRY_PREFIX: &str = "Retry ";
+
+/// Context menu: select entries by glob pattern.
+pub const MENU_SELECT_BY_PATTERN: &str = "Select by pattern";
+
+/// Context menu: invert the current selection.
+pub const MENU_INVERT_SELECTION: &str = "Invert selection";
+
+/// Context menu: create a new file.
+pub const MENU_NEW_FILE: &str = "New file";
+
+/// Status bar: a drag ended in the folder the items came from.
+pub const STATUS_DROP_IN_SOURCE: &str = "Dropped in the source folder — nothing to do.";
+
+/// Status bar prefix when a rename is refused, followed by the reason.
+pub const STATUS_RENAME_REFUSED: &str = "Rename refused: ";
+
+/// Status bar when the current location is not a local folder.
+pub const STATUS_NEEDS_LOCAL_FOLDER: &str = "File operations need a local folder.";
+
+/// Status bar when an operation ended without a more specific reason.
+pub const STATUS_OPERATION_FAILED: &str = "Operation failed";
+
+/// Status bar: the cleaner scan found nothing to remove.
+pub const STATUS_NO_EMPTY_FOLDERS: &str = "No empty folders found.";
+
+/// Status bar: the listing is complete.
+pub const STATUS_DONE: &str = "Done.";
+
+/// Status bar: a listing is in flight.
+pub const STATUS_LOADING: &str = "Loading\u{2026}";
+
+/// Status bar suffix counting matched entries.
+pub const ENTRIES_MATCHED: &str = "entries matched";
+
+/// Status bar suffix counting empty folders.
+pub const EMPTY_FOLDERS: &str = "empty folders";
+
+/// Progress suffix counting files.
+pub const PROGRESS_FILES: &str = "files";
+
+/// Accessible progress wording: the percent suffix.
+pub const PROGRESS_PERCENT: &str = "percent";
+
+/// Drag feedback: the Shell will copy.
+pub const DRAG_COPY: &str = "Copy (drag)";
+
+/// Drag feedback: the Shell will move.
+pub const DRAG_MOVE: &str = "Move (drag)";
+
+/// Default name of a newly created file.
+pub const NEW_FILE_NAME: &str = "New file.txt";
+
+/// Activity row state: queued, not started.
+pub const STATE_PENDING: &str = "pending";
+
+/// Activity row state: transferring.
+pub const STATE_RUNNING: &str = "running";
+
+/// Activity row state: paused by the user.
+pub const STATE_PAUSED: &str = "paused";
+
+/// Activity row state: finished with nothing failed.
+pub const STATE_COMPLETED: &str = "completed";
+
+/// Activity row state: finished with per-item failures.
+pub const STATE_COMPLETED_WITH_WARNINGS: &str = "completed with warnings";
+
+/// Activity row state: ended on an operation-level error.
+pub const STATE_FAILED: &str = "failed";
+
+/// Activity row state: ended because the user cancelled.
+pub const STATE_CANCELLED: &str = "cancelled";
+
+/// Entry kind column: directory.
+pub const KIND_FOLDER: &str = "Folder";
+
+/// Entry kind column: regular file.
+pub const KIND_FILE: &str = "File";
+
+/// Entry kind column: symbolic link.
+pub const KIND_SYMLINK: &str = "Symlink";
+
+/// Entry kind column: any other reparse point.
+pub const KIND_REPARSE_POINT: &str = "Reparse Point";
