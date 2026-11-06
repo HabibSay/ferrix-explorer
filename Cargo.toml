@@ -24,6 +24,7 @@ windows = { version = "=0.62.2", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
     "Win32_UI_Shell",
+    "Win32_Storage_FileSystem",
 ] }
 windows-core = "=0.62.2"
 windows-implement = "=0.60.2"

@@ -6,6 +6,7 @@
 //! registers an OLE drop target on it, and persists the window size on close.
 
 #[path = "../../../resources/en-US.rs"]
+#[allow(dead_code)]
 mod strings;
 
 mod orchestration;
@@ -53,9 +54,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let window = ApplicationWindow::new()?;
 
     // Restore saved window size before showing.
-    window
-        .window()
-        .set_size(slint::PhysicalSize::new(size.width as u32, size.height as u32));
+    window.window().set_size(slint::PhysicalSize::new(
+        size.width as u32,
+        size.height as u32,
+    ));
 
     // The window must be shown before we can retrieve the native handle.
     window.window().show()?;
@@ -134,9 +136,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             orch_sub.lock().unwrap().navigate_to_path(&item);
         });
 
-        // Row selection (single, ctrl, shift) — full multi-select is Slice 4.
-        let _orch_sel = orch.clone();
-        win.on_row_selected(move |_id, _ctrl, _shift| {});
+        // Row selection (single, ctrl, shift) — full multi-select wired for Slice 4.
+        let orch_sel = orch.clone();
+        win.on_row_selected(move |id, ctrl, shift| {
+            orch_sel
+                .lock()
+                .unwrap()
+                .on_row_selected(id as u64, ctrl, shift);
+        });
+
+        // Column resize callback.
+        let orch_resize = orch.clone();
+        win.on_column_resize_requested(move |col_index, new_width| {
+            orch_resize
+                .lock()
+                .unwrap()
+                .on_column_resize(col_index, new_width);
+        });
+
+        // Column reorder callback.
+        let orch_reorder = orch.clone();
+        win.on_column_reorder_requested(move |from_index, to_index| {
+            orch_reorder
+                .lock()
+                .unwrap()
+                .on_column_reorder(from_index, to_index);
+        });
 
         // focus-address-bar callback: handled in Slint (calls focus-input() directly).
         win.on_focus_address_bar(|| {});
@@ -192,24 +217,6 @@ fn get_hwnd(window: &ApplicationWindow) -> Result<HWND, Box<dyn std::error::Erro
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use fx_a11y::root_accessibility;
-
-    #[test]
-    fn native_and_slint_resources_share_the_window_title() {
-        let slint = include_str!("../../../resources/en-US.slint");
-        assert!(slint.contains(strings::APP_TITLE));
-        assert_eq!(
-            root_accessibility(strings::APP_TITLE).name,
-            strings::APP_TITLE
-        );
-    }
-}
-
 // ── Logging ────────────────────────────────────────────────────────────────────
 
 fn init_logging() -> std::io::Result<WorkerGuard> {
@@ -238,4 +245,22 @@ fn init_logging() -> std::io::Result<WorkerGuard> {
         .try_init()
         .map_err(std::io::Error::other)?;
     Ok(guard)
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fx_a11y::root_accessibility;
+
+    #[test]
+    fn native_and_slint_resources_share_the_window_title() {
+        let slint = include_str!("../../../resources/en-US.slint");
+        assert!(slint.contains(strings::APP_TITLE));
+        assert_eq!(
+            root_accessibility(strings::APP_TITLE).name,
+            strings::APP_TITLE
+        );
+    }
 }

@@ -21,6 +21,7 @@ struct ColumnSpec {
     visible: bool,
     sort-ascending: bool,
     sort-active: bool,
+    sort-direction: string,  // "ascending" | "descending" | "none"
 }
 
 // ── FileListItem ──────────────────────────────────────────────────────────────
@@ -86,32 +87,115 @@ component FileList inherits Rectangle {
 
 // ── DetailsTable ──────────────────────────────────────────────────────────────
 
-// Details table with fixed column headers.
+// Details table with sortable, resizable, and reorderable column headers.
 // Rows are rendered by FileList; this component owns only the header row.
 component DetailsTable inherits VerticalLayout {
     in property <[ColumnSpec]> columns: [];
     callback sort-by-column(int);
+    // Emitted when the user drags a column resize handle. Arguments: (col-index, new-width).
+    callback column-resize-requested(int, length);
+    // Emitted when the user drags a column header to reorder it. Arguments: (from-index, to-index).
+    callback column-reorder-requested(int, int);
+
+    // Internal drag state for reordering
+    private property <int> drag-source-index: -1;
+    private property <bool> drag-active: false;
 
     // Column header row
     Rectangle {
         height: 28px;
         background: #f0f0f0;
+
         HorizontalLayout {
-            for col[i] in root.columns: TouchArea {
+            spacing: 0px;
+
+            for col[i] in root.columns: Rectangle {
                 width: col.width;
-                clicked => { root.sort-by-column(i); }
-                accessible-role: button;
-                accessible-label: col.sort-active
-                    ? (col.title + (col.sort-ascending ? ", sorted ascending" : ", sorted descending"))
-                    : col.title;
+                clip: true;
+
+                // Header cell touch area — clicking sorts, dragging reorders.
+                header-touch := TouchArea {
+                    width: parent.width - 6px;  // leave room for resize handle
+                    height: 28px;
+
+                    clicked => { root.sort-by-column(i); }
+
+                    pointer-event(event) => {
+                        if (event.button == PointerEventButton.left
+                                && event.kind == PointerEventKind.down) {
+                            root.drag-source-index = i;
+                            root.drag-active = true;
+                        }
+                        if (event.button == PointerEventButton.left
+                                && event.kind == PointerEventKind.up) {
+                            if (root.drag-active && root.drag-source-index != i
+                                    && root.drag-source-index >= 0) {
+                                root.column-reorder-requested(root.drag-source-index, i);
+                            }
+                            root.drag-active = false;
+                            root.drag-source-index = -1;
+                        }
+                    }
+
+                    accessible-role: button;
+                    accessible-label: col.sort-active
+                        ? (col.title + (col.sort-ascending ? ", sorted ascending" : ", sorted descending"))
+                        : col.title;
+                }
+
+                // Sort indicator + title text
                 Text {
+                    x: 4px;
+                    y: 0px;
+                    width: parent.width - 10px;
+                    height: 28px;
                     text: col.sort-active
                         ? (col.title + (col.sort-ascending ? " ▲" : " ▼"))
                         : col.title;
                     vertical-alignment: center;
                     horizontal-alignment: left;
-                    x: 4px;
                     overflow: elide;
+                }
+
+                // Resize drag handle — thin touch area on the right edge.
+                resize-handle := TouchArea {
+                    x: parent.width - 6px;
+                    y: 0px;
+                    width: 6px;
+                    height: 28px;
+                    mouse-cursor: col-resize;
+
+                    // Track drag start position
+                    private property <length> drag-start-x: 0px;
+                    private property <length> col-start-width: 0px;
+
+                    pointer-event(event) => {
+                        if (event.button == PointerEventButton.left
+                                && event.kind == PointerEventKind.down) {
+                            self.drag-start-x = self.mouse-x;
+                            self.col-start-width = col.width;
+                        }
+                        if (event.button == PointerEventButton.left
+                                && event.kind == PointerEventKind.move) {
+                            // new-width = clamp(col-start-width + delta, 40px, 600px)
+                            // We emit the event; the Rust side does clamping.
+                            root.column-resize-requested(
+                                i,
+                                self.col-start-width + (self.mouse-x - self.drag-start-x)
+                            );
+                        }
+                    }
+
+                    accessible-role: none;
+
+                    // Visual divider line
+                    Rectangle {
+                        x: 2px;
+                        y: 4px;
+                        width: 1px;
+                        height: 20px;
+                        background: #cccccc;
+                    }
                 }
             }
         }
@@ -353,6 +437,9 @@ export component ApplicationWindow inherits Window {
     callback navigate-refresh();
     // Focus address bar (called from keyboard handler below or from orchestration)
     callback focus-address-bar();
+    // Column resize/reorder
+    callback column-resize-requested(int, length);
+    callback column-reorder-requested(int, int);
 
     // ── Global keyboard handler ──────────────────────────────────────────────
     FocusScope {
@@ -410,6 +497,12 @@ export component ApplicationWindow inherits Window {
             DetailsTable {
                 columns: root.columns;
                 sort-by-column(i) => { root.sort-by-column(i); }
+                column-resize-requested(col-index, new-width) => {
+                    root.column-resize-requested(col-index, new-width);
+                }
+                column-reorder-requested(from-index, to-index) => {
+                    root.column-reorder-requested(from-index, to-index);
+                }
             }
 
             // Virtualized file list

@@ -6,6 +6,7 @@
 //! registry. All user-visible text is supplied by the caller.
 
 pub mod execute;
+pub mod icons;
 
 use windows::{
     Win32::{

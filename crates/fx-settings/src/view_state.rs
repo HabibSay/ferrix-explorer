@@ -14,21 +14,11 @@ use std::{fs, io, path::PathBuf};
 // ── FolderViewState ───────────────────────────────────────────────────────────
 
 /// Remembered view state for one folder path.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct FolderViewState {
     pub view_mode: ViewMode,
     pub column_layout: ColumnLayout,
     pub sort_key: SortKey,
-}
-
-impl Default for FolderViewState {
-    fn default() -> Self {
-        FolderViewState {
-            view_mode: ViewMode::default(),
-            column_layout: ColumnLayout::default(),
-            sort_key: SortKey::default(),
-        }
-    }
 }
 
 // ── ViewStateStore ────────────────────────────────────────────────────────────
@@ -72,9 +62,10 @@ impl ViewStateStore {
 
     /// Persist the entire store to disk.
     pub fn save(&self) -> io::Result<()> {
-        let parent = self.path.parent().ok_or_else(|| {
-            io::Error::other("view_state path has no parent directory")
-        })?;
+        let parent = self
+            .path
+            .parent()
+            .ok_or_else(|| io::Error::other("view_state path has no parent directory"))?;
         fs::create_dir_all(parent)?;
 
         let mut out = String::new();
@@ -291,7 +282,8 @@ mod tests {
 
     #[test]
     fn unknown_keys_are_ignored() {
-        let contents = "[C:\\test]\nview_mode=List\nunknown_key=whatever\nsort_col=Name\nsort_dir=Ascending\n";
+        let contents =
+            "[C:\\test]\nview_mode=List\nunknown_key=whatever\nsort_col=Name\nsort_dir=Ascending\n";
         let map = parse_view_state(contents);
         let state = map.get(r"C:\test").expect("entry");
         assert!(matches!(state.view_mode, ViewMode::List));

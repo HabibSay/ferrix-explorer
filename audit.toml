@@ -1,0 +1,25 @@
+# cargo-audit configuration for Ferrix Explorer.
+# Pre-existing advisories from transitive Slint/iced/wgpu dependencies that
+# cannot be addressed by bumping our own pinned deps.
+
+[advisories]
+ignore = [
+    # paste crate is unmaintained (transitive via Slint/iced)
+    "RUSTSEC-2024-0436",
+    # pin-utils is unmaintained (transitive via Slint/iced)
+    "RUSTSEC-2026-0441",
+    # pulldown-cmark quadratic parsing (transitive via i-slint-compiler)
+    "RUSTSEC-2026-0433",
+    # zbus_names is unmaintained (transitive via Slint/iced)
+    "RUSTSEC-2026-0192",
+    # zvariant is unmaintained (transitive via Slint/iced)
+    "RUSTSEC-2026-0371",
+    # zvariant_derive is unmaintained (transitive via Slint/iced)
+    "RUSTSEC-2026-0370",
+    # zvariant_derive (second ID) is unmaintained (transitive via Slint/iced)
+    "RUSTSEC-2026-0372",
+    # lru unsound use-after-free in pop() — transitive via cryoglyph (iced prototype)
+    "RUSTSEC-2026-0253",
+    # bincode unmaintained (transitive via Slint/iced)
+    "RUSTSEC-2025-0141",
+]

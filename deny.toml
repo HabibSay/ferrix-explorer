@@ -1,0 +1,70 @@
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # Pre-existing: paste crate is unmaintained (transitive via Slint/iced dependencies)
+    "RUSTSEC-2024-0436",
+    # Pre-existing: pin-utils is unmaintained (transitive via Slint/iced dependencies)
+    "RUSTSEC-2026-0441",
+    # Pre-existing: ttf-parser is unmaintained (transitive via Slint/iced dependencies)
+    "RUSTSEC-2026-0433",
+    # Pre-existing: zbus_names is unmaintained (transitive via Slint/iced dependencies)
+    "RUSTSEC-2026-0192",
+    # Pre-existing: zvariant is unmaintained (transitive via Slint/iced dependencies)
+    "RUSTSEC-2026-0371",
+    # Pre-existing: zvariant_derive is unmaintained (transitive via Slint/iced dependencies)
+    "RUSTSEC-2026-0370",
+    # Pre-existing: zvariant-related advisory (transitive via Slint/iced dependencies)
+    "RUSTSEC-2026-0372",
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+# Slint 1.18.1 is offered as GPL-3.0-only OR Royalty-free OR commercial. The prototypes use the
+# Royalty-free option only, so GPL-3.0 stays out of the global allow list and the Slint crates are
+# the only exception. Revisit this list if the UI decision changes (ADR 0001 accepted 2026-10-29).
+# CC0-1.0 is allowed globally for `notify` 8.2.1 which is a product dependency (ADR 0001).
+exceptions = [
+    { crate = "slint", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },              # product dependency (ADR 0001 accepted 2026-10-29)
+    { crate = "slint-build", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },        # product dependency (ADR 0001 accepted 2026-10-29)
+    { crate = "slint-macros", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },       # product dependency (ADR 0001 accepted 2026-10-29)
+    { crate = "i-slint-backend-android-activity", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },  # product dependency (ADR 0001 accepted 2026-10-29)
+    { crate = "i-slint-backend-linuxkms", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },          # product dependency (ADR 0001 accepted 2026-10-29)
+    { crate = "i-slint-backend-qt", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },                # product dependency (ADR 0001 accepted 2026-10-29)
+    { crate = "i-slint-backend-selector", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },          # product dependency (ADR 0001 accepted 2026-10-29)
+    { crate = "i-slint-backend-testing", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },           # product dependency (ADR 0001 accepted 2026-10-29)
+    { crate = "i-slint-backend-winit", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },             # product dependency (ADR 0001 accepted 2026-10-29)
+    { crate = "i-slint-common", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },                    # product dependency (ADR 0001 accepted 2026-10-29)
+    { crate = "i-slint-compiler", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },                  # product dependency (ADR 0001 accepted 2026-10-29)
+    { crate = "i-slint-core", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },                      # product dependency (ADR 0001 accepted 2026-10-29)
+    { crate = "i-slint-core-macros", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },               # product dependency (ADR 0001 accepted 2026-10-29)
+    { crate = "i-slint-editor-preview", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },            # product dependency (ADR 0001 accepted 2026-10-29)
+    { crate = "i-slint-live-preview", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },              # product dependency (ADR 0001 accepted 2026-10-29)
+    { crate = "i-slint-renderer-anyrender", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },        # product dependency (ADR 0001 accepted 2026-10-29)
+    { crate = "i-slint-renderer-femtovg", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },          # product dependency (ADR 0001 accepted 2026-10-29)
+    { crate = "i-slint-renderer-skia", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },             # product dependency (ADR 0001 accepted 2026-10-29)
+    { crate = "i-slint-renderer-software", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },         # product dependency (ADR 0001 accepted 2026-10-29)
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -161,6 +161,10 @@ impl FileListViewModel {
         &self.column_layout
     }
 
+    pub fn sort_key(&self) -> &SortKey {
+        &self.sort_key
+    }
+
     /// Return the filesystem path for `entry_id`, if it is in the current listing.
     pub fn entry_path(&self, id: u64) -> Option<std::path::PathBuf> {
         self.all_entries
@@ -188,6 +192,17 @@ impl FileListViewModel {
     pub fn view_mode(&self) -> fx_domain::view::ViewMode {
         self._view_mode
     }
+
+    /// Update visibility rules (show hidden/system files) and rebuild the visible list.
+    pub fn set_visibility_rules(&mut self, rules: VisibilityRules) {
+        self.visibility = rules;
+        self.rebuild_visible();
+    }
+
+    /// Update the column layout (widths, order, visibility). No rebuild needed.
+    pub fn set_column_layout(&mut self, layout: ColumnLayout) {
+        self.column_layout = layout;
+    }
 }
 
 impl Default for FileListViewModel {
@@ -197,7 +212,7 @@ impl Default for FileListViewModel {
 }
 
 /// Trie les entrées: dossiers en premier, puis case-insensitive sur la colonne primaire.
-fn sort_entries(entries: &mut Vec<FileEntry>, key: &SortKey) {
+fn sort_entries(entries: &mut [FileEntry], key: &SortKey) {
     entries.sort_by(|a, b| {
         // Dossiers en premier
         let a_dir = matches!(a.kind, EntryKind::Directory);
@@ -217,15 +232,15 @@ fn sort_entries(entries: &mut Vec<FileEntry>, key: &SortKey) {
             ord
         };
         // Colonne secondaire si égalité
-        if ord == std::cmp::Ordering::Equal {
-            if let Some((sec_col, sec_dir)) = key.secondary {
-                let ord2 = compare_by_column(a, b, sec_col);
-                return if matches!(sec_dir, SortDirection::Descending) {
-                    ord2.reverse()
-                } else {
-                    ord2
-                };
-            }
+        if ord == std::cmp::Ordering::Equal
+            && let Some((sec_col, sec_dir)) = key.secondary
+        {
+            let ord2 = compare_by_column(a, b, sec_col);
+            return if matches!(sec_dir, SortDirection::Descending) {
+                ord2.reverse()
+            } else {
+                ord2
+            };
         }
         ord
     });
