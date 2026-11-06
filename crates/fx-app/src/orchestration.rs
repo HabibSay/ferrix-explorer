@@ -265,9 +265,16 @@ impl Orchestrator {
         .ok();
 
         // Start filesystem watcher for this location; the watch task owns the receiver.
+        // `NotifyWatcher::watch` calls `tokio::spawn` internally, which requires an
+        // active Tokio context.  We enter the runtime for the duration of the call so
+        // that `tokio::spawn` finds the runtime handle even though we are on the
+        // synchronous Slint UI thread.
         let (watch_tx, mut watch_rx) = tokio::sync::mpsc::unbounded_channel::<WatchEvent>();
-        if let Err(err) = self.watcher.watch(&location, watch_tx) {
-            tracing::warn!(%err, "Could not start watcher for {location}");
+        {
+            let _guard = self.runtime.enter();
+            if let Err(err) = self.watcher.watch(&location, watch_tx) {
+                tracing::warn!(%err, "Could not start watcher for {location}");
+            }
         }
 
         // Spawn a task that refreshes the listing whenever the watcher fires.
