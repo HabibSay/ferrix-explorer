@@ -59,15 +59,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         size.height as u32,
     ));
 
-    // The window must be shown before we can retrieve the native handle.
-    window.window().show()?;
-
-    // Extract the Win32 HWND so we can register the OLE drop target.
-    let hwnd = get_hwnd(&window)?;
-
-    // Register OLE + drop target on the Slint window's HWND.
-    let mut drop_reg = OleDropRegistration::register(hwnd)?;
-
     // Determine initial location: user's home directory, falling back to C:\.
     let initial_location = {
         let home = directories::BaseDirs::new()
@@ -81,7 +72,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     {
         let win = &window;
 
-        // Address bar confirmed (Enter or completion selected).
         let orch = std::sync::Arc::new(std::sync::Mutex::new(orchestrator));
 
         let orch_back = orch.clone();
@@ -136,7 +126,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             orch_sub.lock().unwrap().navigate_to_path(&item);
         });
 
-        // Row selection (single, ctrl, shift) — full multi-select wired for Slice 4.
+        // Row selection (single, ctrl, shift).
         let orch_sel = orch.clone();
         win.on_row_selected(move |id, ctrl, shift| {
             orch_sel
@@ -183,11 +173,55 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         slint::CloseRequestResponse::HideWindow
     });
 
-    // Hand control to the Slint event loop. Returns when the last window is hidden.
+    // The OLE drop registration needs the HWND, which Slint only materialises after
+    // the first event-loop tick.  We schedule it via a single-shot Timer that fires
+    // on the UI/STA thread, where both OleInitialize and RegisterDragDrop must run.
+    // The registration is kept alive for the run loop lifetime in a thread_local so
+    // it is dropped on the same STA thread without crossing any Send boundary.
+    //
+    // SAFETY: Timer callbacks run on the Slint UI thread (the STA thread on Windows).
+    // OleDropRegistration is !Send and is never moved off that thread.
+    thread_local! {
+        static DROP_REG: std::cell::RefCell<Option<OleDropRegistration>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    let window_weak_ole = window.as_weak();
+    let ole_timer = slint::Timer::default();
+    ole_timer.start(
+        slint::TimerMode::SingleShot,
+        std::time::Duration::ZERO,
+        move || {
+            let Some(win) = window_weak_ole.upgrade() else {
+                return;
+            };
+            match get_hwnd(&win) {
+                Ok(hwnd) => match OleDropRegistration::register(hwnd) {
+                    Ok(reg) => {
+                        DROP_REG.with(|cell| *cell.borrow_mut() = Some(reg));
+                        tracing::info!("OLE drop target registered");
+                    }
+                    Err(err) => tracing::warn!(%err, "OLE drop target registration failed"),
+                },
+                Err(err) => tracing::warn!(%err, "Could not obtain HWND for OLE registration"),
+            }
+        },
+    );
+
+    // Show the window and hand control to the Slint event loop.
+    window.window().show()?;
     window.run()?;
 
-    // Revoke OLE drop target before the HWND is destroyed.
-    drop_reg.revoke().ok();
+    // Revoke OLE drop target before the HWND is destroyed (still on the UI thread
+    // because run() returns on the UI thread after the event loop exits).
+    DROP_REG.with(|cell| {
+        if let Some(mut reg) = cell.borrow_mut().take() {
+            reg.revoke().ok();
+        }
+    });
+
+    // ole_timer is dropped here; the single-shot has already fired so this is a no-op.
+    drop(ole_timer);
 
     tracing::info!("Ferrix Explorer stopped");
     Ok(())
