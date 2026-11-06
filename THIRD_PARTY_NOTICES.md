@@ -18,8 +18,15 @@ dependencies from `Cargo.lock` before publishing binaries.
 - `jwalk` 0.9.0 — MIT. Parallel filesystem walker used by `fx-fs`. Pulls `rayon` and `crossbeam` transitively.
 - `notify` 8.2.1 — CC0-1.0. Filesystem event watcher used by `fx-fs`. Product dependency (ADR 0001).
 - `tokio` 1.54.1 — MIT. Async runtime (`rt-multi-thread` feature only) used by `fx-fs` and `fx-app`.
-- `tokio-util` 0.7.20 — MIT. `CancellationToken` (`sync` feature only) used by `fx-fs`.
+- `tokio-util` 0.7.20 — MIT. `CancellationToken` (`sync` feature only) used by `fx-fs` and
+  `fx-ops`.
+- `md-5` 0.11.0 — MIT OR Apache-2.0. MD5 checksums used by `fx-ops` (OPS-12).
+- `sha2` 0.11.1 — MIT OR Apache-2.0. SHA-256 checksums used by `fx-ops` (OPS-12).
+- `blake3` 1.8.7 — CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception. BLAKE3 checksums used
+  by `fx-ops` (OPS-12). Built with the `pure` feature so no C or assembly is compiled; the default
+  x86-64 build of this crate does compile C/assembly, which is why the feature is pinned here.
+- `tempfile` 3.20.0 — MIT OR Apache-2.0. Test-only temporary directories in `fx-fs`, `fx-settings`
+  and `fx-ops`.
 
-The application currently has no product-selected UI framework and no optional compression,
-preview, or cloud SDK dependency. See `docs/LEGAL.md` for the dependency policy and restricted
-component register.
+The application currently has no optional compression, preview, or cloud SDK dependency. See
+`docs/LEGAL.md` for the dependency policy and restricted component register.

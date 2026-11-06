@@ -1,6 +1,6 @@
 # Dependency and licensing register
 
-Status: Tranche 0 baseline. This file must be updated whenever a dependency is added, removed, or changed.
+Status: Tranche 2 slice 1. This file must be updated whenever a dependency is added, removed, or changed.
 
 ## Project license decision
 
@@ -22,7 +22,11 @@ Ferrix is currently intended to use `MIT OR Apache-2.0`, but the UI framework de
 | `jwalk` 0.9.0 | `fx-fs` | MIT | Parallel filesystem walker. Pulls rayon and crossbeam transitively. |
 | `notify` 8.2.1 | `fx-fs` | CC0-1.0 | Filesystem event watcher. Product dependency (ADR 0001). |
 | `tokio` 1.54.1 | `fx-fs`, `fx-app` | MIT | Async runtime, rt-multi-thread feature only. |
-| `tokio-util` 0.7.20 | `fx-fs` | MIT | CancellationToken (feature sync only). |
+| `tokio-util` 0.7.20 | `fx-fs`, `fx-ops` | MIT | CancellationToken (feature sync only). |
+| `md-5` 0.11.0 | `fx-ops` | MIT OR Apache-2.0 | MD5 hashing for OPS-12 checksums. Pure Rust, declared MSRV 1.85. |
+| `sha2` 0.11.1 | `fx-ops` | MIT OR Apache-2.0 | SHA-256 hashing for OPS-12 checksums. Pure Rust, declared MSRV 1.88. |
+| `blake3` 1.8.7 | `fx-ops` | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception | BLAKE3 hashing for OPS-12 checksums. **The `pure` feature is enabled**: the default x86-64 build compiles C/assembly via `cc`, so without `pure` this entry would be a native dependency. |
+| `tempfile` 3.20.0 | dev: `fx-fs`, `fx-settings`, `fx-ops` | MIT OR Apache-2.0 | Test-only temporary directories and fixtures. Not linked into product binaries. |
 
 Slint is accepted only under the Royalty-free option for the two spike crates: `deny.toml` globally allows the permissive licenses and grants `LicenseRef-Slint-Royalty-free-2.0` through per-crate exceptions, so `GPL-3.0-only` is never globally approved. This exception must be revisited together with ADR 0001 and removed if both prototypes are deleted.
 

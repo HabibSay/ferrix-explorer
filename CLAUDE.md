@@ -5,11 +5,13 @@
 - Project: **Ferrix Explorer**, a Rust file explorer for Windows 10/11.
 - Source of truth: `PRD.md` and the decision records in `docs/adr/`. Read the whole PRD and the
   current tranche before changing code.
-- Current tranche: **Tranche 0 — foundations and technical validation** (workspace, CI, empty
-  window with a UI Automation root, Slint/iced prototypes, COM/OLE/context-menu spikes). Do not
-  implement Tranche 1 features before Tranche 0 acceptance has been validated on Windows.
-- The UI framework is **not chosen**; see `docs/adr/0001-ui-framework.md`. Do not add a production
-  UI dependency or commit an app UI to Slint or iced.
+- Current tranche: **Tranche 2 — file operations** (`docs/superpowers/specs/2026-11-06-tranche-2-file-operations-design.md`).
+  Tranche 1 is implemented on `master`; Tranche 2 is in design review, and the structural decisions
+  listed in section 2 of its spec must be answered before slice 1. Do not implement Tranche 3
+  features (`IFileOperation`, the native progress dialog, OLE drag-and-drop, native context menus)
+  before Tranche 2 is accepted.
+- The UI framework is **Slint 1.18.1**, selected in `docs/adr/0001-ui-framework.md`; the iced spike
+  stays a benchmark baseline, not product code.
 
 ## Layout and dependency boundaries
 
