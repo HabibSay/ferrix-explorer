@@ -89,6 +89,22 @@ pub async fn list_directory(
         Ok(_) => {}
     }
 
+    // The metadata probe above opens the root with no access rights, so it
+    // succeeds even when the caller cannot enumerate the directory (explicit
+    // deny ACEs) — and jwalk then reports the root read failure by yielding
+    // nothing, which would silently present an unreadable directory as empty.
+    // Probe with read_dir (the enumeration right is actually requested) and
+    // surface the failure as a non-fatal batch error, as per-entry errors are.
+    if let Err(e) = std::fs::read_dir(&path) {
+        let msg = ListingBatch {
+            generation,
+            entries: Vec::new(),
+            error: Some(io_error_to_listing_error(&e, &path)),
+        };
+        let _ = tx.send(msg).await;
+        return Ok(());
+    }
+
     // Atomic counter for cheap EntryId assignment within this listing.
     let counter = AtomicU64::new(1);
 
