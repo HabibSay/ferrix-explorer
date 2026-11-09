@@ -37,7 +37,7 @@ jobs:
       - name: Full workspace gate
         shell: bash
         run: |
-          cargo test --workspace --all-targets \
+          cargo test --workspace --all-targets --no-fail-fast \
             2>&1 | tee validation-workspace.txt
           test "${PIPESTATUS[0]}" -eq 0
 
