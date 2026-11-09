@@ -7,7 +7,8 @@
 //!
 //! Restore follows the decided approach (decision 3): enumerate the Recycle Bin's shell
 //! folder and invoke the item's own Restore verb, matched by its **language-independent
-//! canonical verb token** (`GCS_VERBA` = `"restore"`), never by localized menu text.
+//! canonical verb token** (`GCS_VERBA` = `"undelete"` on Windows 11 build 22631;
+//! `"restore"` is also accepted for other Windows builds), never by localized menu text.
 //! `$I`/`$R` records are read only for the identity diff and never written or moved here.
 //! PRD 10.5: the COM calls run on a worker thread that explicitly initializes an STA.
 
@@ -32,7 +33,9 @@ use windows::{
                 IShellFolder, SHCONTF_INCLUDEHIDDEN, SHCONTF_NONFOLDERS, SHGDNF,
                 SHGetDesktopFolder, SHGetFolderLocation, StrRetToBufW,
             },
-            WindowsAndMessaging::{CreatePopupMenu, DestroyMenu, GetMenuItemCount, HMENU},
+            WindowsAndMessaging::{
+                CreatePopupMenu, DestroyMenu, GetMenuItemCount, GetMenuItemID, HMENU,
+            },
         },
     },
     core::{PCSTR, PCWSTR},
@@ -311,7 +314,16 @@ fn find_and_restore(bin: &IShellFolder, wanted: &str) -> Result<(), ShellRecycle
                     .position(|c| *c == 0)
                     .unwrap_or(display_buf.len());
                 let shown = String::from_utf16_lossy(&display_buf[..end]);
-                name_ok = shown == wanted;
+                // Validated on Windows 11 build 22631: SHGDN_NORMAL on the bitbucket
+                // folder yields the item's original full path. Match its file name so
+                // the comparison is independent of how the path is displayed; a bare
+                // name would fall through file_name() unchanged, keeping both shells
+                // working. Windows names are case-insensitive.
+                let base = std::path::Path::new(&shown)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| shown.clone());
+                name_ok = base.eq_ignore_ascii_case(wanted);
             }
 
             if name_ok {
@@ -350,7 +362,11 @@ fn invoke_restore_verb(bin: &IShellFolder, item: *mut ITEMIDLIST) -> Result<(), 
 
         let menu: HMENU = CreatePopupMenu()
             .map_err(|e| ShellRecycleError::NotAvailable(format!("CreatePopupMenu: {e}")))?;
-        let query = ctx.QueryContextMenu(menu, 0, 1, 100, CMF_NORMAL);
+        // Validated on Win11 build 22631: the bitbucket handler assigns internal fixed
+        // ids (its restore command is id 167 with idCmdFirst = 1) and silently DROPS
+        // any command whose id exceeds idCmdLast — with the small idCmdLast the restore
+        // command disappears from the menu, so the id space must be generous.
+        let query = ctx.QueryContextMenu(menu, 0, 1, 0x7FFF, CMF_NORMAL);
         if query.0 < 0 {
             let _ = DestroyMenu(menu);
             return Err(ShellRecycleError::NotAvailable(format!(
@@ -359,17 +375,23 @@ fn invoke_restore_verb(bin: &IShellFolder, item: *mut ITEMIDLIST) -> Result<(), 
             )));
         }
 
-        // Find the menu position whose canonical verb token is "restore". The token
-        // is language-independent, unlike the displayed menu text.
+        // Find the command whose canonical verb token is the Recycle Bin's restore
+        // command. Validated on Win11 22631: the token is "undelete" ("restore" is
+        // accepted for other Windows builds that use it); both are language-independent
+        // canonical tokens, unlike the displayed menu text. The lpVerb offset is
+        // (menu id - idCmdFirst) — menu positions do not match these offsets.
         let count = GetMenuItemCount(Some(menu));
         let mut found: Option<usize> = None;
-        for pos in 0..count.max(0) as usize {
+        for pos in 0..count.max(0) {
+            let id = GetMenuItemID(menu, pos);
+            if id == u32::MAX || id == 0 {
+                continue; // separators and non-command items
+            }
+            let offset = (id as usize).saturating_sub(1); // idCmdFirst = 1
             let mut verb = [0u8; 64];
-            // QueryContextMenu used idCmdFirst = 1, so command id = pos + 1 and the
-            // verb offset for InvokeCommand is pos.
             if ctx
                 .GetCommandString(
-                    pos + 1,
+                    offset,
                     GCS_VERBA,
                     None,
                     windows::core::PSTR(verb.as_mut_ptr()),
@@ -378,8 +400,8 @@ fn invoke_restore_verb(bin: &IShellFolder, item: *mut ITEMIDLIST) -> Result<(), 
                 .is_ok()
             {
                 let end = verb.iter().position(|b| *b == 0).unwrap_or(verb.len());
-                if &verb[..end] == b"restore" {
-                    found = Some(pos);
+                if &verb[..end] == b"undelete" || &verb[..end] == b"restore" {
+                    found = Some(offset);
                     break;
                 }
             }

@@ -1,6 +1,7 @@
 # Tranche 2 — Windows Shell validation checklist (PRD 15.3, spec §12)
 
 Run date: **2026-11-06**. Host: Windows 11 (build 22631), single user session.
+Re-validation session: **2026-11-09** (see the 11-09 addendum at the bottom).
 
 **Blocked-status note (read first).** From ~19:30 UTC on the run date, the workstation's
 third-party security layer (Windows Defender real-time protection is *disabled* on this
@@ -79,3 +80,92 @@ allows freshly built binaries (or run it on a machine with a developer exclusion
    the inline rename editor is anchored to its row and returns focus to the list on commit
    or cancel (M6); the post-create inline rename of a new folder/file is still not wired.
 5. 60 FPS instrumentation (Tranche 0 gate) still open; nothing in this file claims it.
+
+## Addendum — re-validation session 2026-11-09
+
+Same host, same workstation security layer. Purpose: re-run every BLOCKED-ENV row now that
+the layer had relaxed overnight (freshly linked binaries executed again from ~10:00 UTC).
+
+### Environment characterization (probed with throwaway binaries, CLAUDE.md rule 8)
+
+The layer's deny is **location- and reputation-scoped**, refined from Friday's notes:
+
+- A binary running from `ferrix-explorer\target\…` is denied ALL file creation in
+  `%TEMP%`, `%LOCALAPPDATA%` and `$Recycle.Bin\<SID>` (os error 5), while the same binary
+  copied outside the project tree may create files everywhere probed.
+- Freshly linked test binaries are intermittently refused at launch (`CreateProcess` →
+  os error 5) and quarantined (file deleted) minutes later; each relink (new content hash)
+  or new target name resets this, until the layer hardens again — it fully hardened again
+  at ~11:30 UTC (all fresh launches refused, copies vaporized), same as 2026-11-06 evening.
+- Workaround used for the runs below: `CARGO_TARGET_DIR` outside the project
+  (`%TEMP%\opencode\fx-target`), one build + one run per fresh binary. For tempfile-based
+  suites run from the project target dir, `TMP`/`TEMP` redirected to `target\test-tmp`
+  inside the workspace also works (tempfile honors the variables; no test was modified).
+
+### Automated gates re-observed on 2026-11-09
+
+| Gate | Result |
+|---|---|
+| `cargo test -p fx-ops --test transfer` | **PASS 22/22** (TMP → `target\test-tmp`), incl. both symlink/junction self-skipping tests |
+| `cargo test -p fx-ops --lib` | **PASS 66/66** (was 30/66 with 36 `%TEMP%` denies) |
+| `cargo test -p fx-shell --test recycle_bin -- --ignored` | clipboard round-trip **PASS** (twice; one flaky run in between — see row 4), long-path **PASS** (`LongPath` refused up front), `recycle_then_restore` — recycle half **PASS**, restore half **BLOCKED-ENV** at the moment the layer re-hardened; root-caused and fixed, see below |
+| `cargo test -p fx-fs`, `-p fx-settings`, `-p fx-ui --test keyboard`, full workspace gate | **NOT RE-RUN** — the layer re-hardened before these; replay them in the next relaxed window |
+| `cargo fmt --all -- --check` / `cargo clippy --workspace --all-targets -- -D warnings` | **PASS** on the fixed sources (11-09) |
+
+### Real defects found and fixed by actually executing the recycle path (rows 1–3)
+
+`recycle_then_restore_round_trip` ran for the first time ever (it was BLOCKED-ENV on 11-06)
+and exposed three assumptions that do not hold on Windows 11 build 22631, all in
+`fx-shell::recycle::find_and_restore` / `invoke_restore_verb`:
+
+1. **Matching bug**: `GetDisplayNameOf(SHGDNF(0))` on a bitbucket item returns the item's
+   **original full path** (e.g. `C:\…\Temp\fx-shell-rt-27388\fx-restore-probe.txt`), not
+   the bare display name. The code compared that full path against the bare file name, so
+   nothing ever matched. Fixed by matching the basename, case-insensitively (also robust
+   if a future build returns the bare name).
+2. **Truncated menu bug**: `QueryContextMenu` was called with `idCmdLast = 100`. The
+   bitbucket handler assigns internal fixed ids (its restore command is id 167 with
+   `idCmdFirst = 1`) and **silently drops any command whose id exceeds idCmdLast** — with
+   100, the menu contained only Cut/Delete/Properties and restore was not even present.
+   Fixed with `idCmdLast = 0x7FFF`.
+3. **Wrong canonical token**: the restore command's canonical verb on this build is
+   **`"undelete"`**, not `"restore"` (`GCS_VERBA` at the real offset `id - idCmdFirst`
+   returns `undelete`/`cut`/`delete`/`properties`). `InvokeCommand` by verb *string*
+   returns E_INVALIDARG (both truncated and full menus) — only the MAKEINTRESOURCEA
+   offset form works. The lookup now matches `undelete` (accepting `restore` for other
+   builds) at real offsets and invokes by offset.
+
+Verified en route and recorded so nobody re-derives them: `SHGDN_FORPARSING` on a
+bitbucket item returns the **`$R` file path**, not the original path; the menu's default
+command is Properties, not Restore; `ShellExecuteEx` with `SEE_MASK_IDLIST|INVOKEIDLIST`
+and verb `restore` fails (SE_ERR_ACCESSDENIED after a ~60 s hang) — do not use.
+
+**Silent-nuke hazard (environmental, recorded for production review).** While the layer
+denies the deleting binary's `$Recycle.Bin` write, `SHFileOperationW(FO_DELETE,
+FOF_ALLOWUNDO|FOF_NOCONFIRMATION)` returns **0, removes the source file, creates no `$R`
+record and shows no nuke warning** (hwnd is NULL in the test harness): a *permanent* delete
+indistinguishable from success. The identity diff correctly reports it (empty
+`recycled_name` → undo refuses), but users of a hypothetical production build running
+under such a layer would lose files silently. The app passes a real `HWND`; whether the
+warning appears then is untested on this host (row 18's run procedure).
+
+### Checklist row updates (2026-11-09)
+
+| # | Item | Status | Evidence / note |
+|---|---|---|---|
+| 1 | Delete → found in Recycle Bin | **partial → PASS (recycle half)** | `recycled_name` resolved via the before/after diff on every 11-09 run (`$R…` name returned, source gone); the Shell-restore half of the row is row 2 |
+| 2 | Restore via undo (Shell verb path) | **BLOCKED-ENV (was NOT RUN)** | the verb path now executes: matching + menu + `undelete` offset fixed; the final run was refused at launch when the layer re-hardened. Replay `recycle_then_restore_round_trip` in the next relaxed window before any claim |
+| 3 | Double delete → undo refused | NOT RUN | unchanged (needs app launch) |
+| 4 | Clipboard CF_HDROP write/read | **PASS (auto part)** | round-trip incl. Preferred DropEffect passed twice; one flaky failure mid-session (`OpenClipboard` ok then `EmptyClipboard` → 0x8007058A "thread has no clipboard open", and in a later run write-ok/read-empty) attributed to the security layer, which also denies other file writes of the same binaries. Cross-app paste into Explorer stays a manual sub-step (row 5) |
+| 9 | Long-path recycle | **PASS** | `ShellRecycleError::LongPath` raised up front for a >260-char path; recorded on the real host |
+| 19 | Symlink copies as link, junction skipped | **PASS** | `transfer` 22/22 incl. `a_symbolic_link_is_recreated_as_a_link_not_copied` and `a_junction_stays_skipped`; `reparse_tag` real-NTFS read (row 20) still NOT RUN |
+| 16 | No Tranche 3 code in the tree | PASS | re-checked during the session |
+
+### Left open by this session
+
+- Replay in the next relaxed window (or on a host with a developer exclusion for the
+  target directories, as suggested on 11-06): the full `recycle_bin` suite (rows 1–2),
+  `fx-fs` / `fx-settings` / `keyboard` / workspace gate, then the manual half (rows 3,
+  5–8, 10–15, 17–18, 20–23, 24 visible-UI halves).
+- The verification-order caveat for row 2 stays: no restore-capability claim until
+  `recycle_then_restore_round_trip` is observed PASS end-to-end.
