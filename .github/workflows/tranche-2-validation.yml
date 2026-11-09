@@ -1,0 +1,50 @@
+name: Tranche 2 validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validation:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.92.0
+
+      - name: Record runner OS build (for the validation doc)
+        shell: bash
+        run: cmd //c ver
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Recycle bin / clipboard suites (ignored: touch the real Recycle Bin and clipboard)
+        shell: bash
+        run: |
+          cargo test -p fx-shell --test recycle_bin -- --ignored --test-threads=1 \
+            2>&1 | tee validation-recycle-bin.txt
+          test "${PIPESTATUS[0]}" -eq 0
+
+      - name: Full workspace gate
+        shell: bash
+        run: |
+          cargo test --workspace --all-targets \
+            2>&1 | tee validation-workspace.txt
+          test "${PIPESTATUS[0]}" -eq 0
+
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tranche-2-validation-evidence
+          path: validation-*.txt
+          if-no-files-found: error

@@ -118,24 +118,61 @@ async fn cancellation_mid_list() {
     );
 }
 
-/// Windows-only: trying to list a protected directory returns `AccessDenied`.
+/// Windows-only: a directory the current user cannot list surfaces
+/// `AccessDenied` as a non-fatal batch error while the listing itself
+/// completes.
+///
+/// The fixture creates its own directory and denies the current user the `RD`
+/// (list directory) right with `icacls`, instead of relying on a system path
+/// such as `System32\config\systemprofile`.  That path is only protected for a
+/// non-elevated user: the GitHub Actions Windows runner executes the tests
+/// with an elevated administrator token, which can list it, so the system-path
+/// fixture made this test fail on CI.  `DELETE` stays granted, so the denied
+/// directory is removed normally when the temp dir is dropped and no ACL
+/// restore is needed.
+///
+/// `std::fs::metadata` still succeeds on the denied root (it opens the handle
+/// with no access rights, so deny bits on the root cannot block it), therefore
+/// the denial is reported by the walker through the error-batch mechanism that
+/// `list_directory` uses for non-fatal errors.
 #[cfg(target_os = "windows")]
 #[tokio::test]
 async fn access_denied_continues() {
-    // System32\config is ACL-protected even for admins at the API level.
-    let protected = PathBuf::from(r"C:\Windows\System32\config\systemprofile");
-    if !protected.exists() {
-        // If the path doesn't exist in this environment, skip gracefully.
-        return;
-    }
-    let location = Location::Local(protected.clone());
-    let (tx, _rx) = tokio::sync::mpsc::channel(8);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let denied = dir.path().join("restricted");
+    std::fs::create_dir(&denied).expect("create fixture dir");
+
+    let sid = current_user_sid().expect("cannot resolve the current user SID");
+    let deny = format!("*{sid}:(RD)");
+    let (ok, output) = run_icacls(&denied, &["/deny", deny.as_str()]);
+    assert!(
+        ok,
+        "failed to deny list access on {}: {output}",
+        denied.display()
+    );
+
+    let location = Location::Local(denied.clone());
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     let token = CancellationToken::new();
 
     let result = list_directory(&location, 1, token, tx).await;
     assert!(
-        matches!(result, Err(ListingError::AccessDenied(_))),
-        "expected AccessDenied, got {result:?}"
+        result.is_ok(),
+        "listing should complete and report the denial per batch, got {result:?}"
+    );
+
+    // Drain the channel: at least one batch must carry AccessDenied(root).
+    let mut saw_access_denied = false;
+    while let Ok(batch) = rx.try_recv() {
+        if let Some(ListingError::AccessDenied(p)) = &batch.error {
+            assert_eq!(p, &denied, "AccessDenied must point at the denied dir");
+            saw_access_denied = true;
+        }
+    }
+    assert!(
+        saw_access_denied,
+        "expected an AccessDenied error batch for {}",
+        denied.display()
     );
 }
 
@@ -180,4 +217,41 @@ fn long_path() {
     let long_str: String = format!("C:\\{}", "x".repeat(260));
     let long = PathBuf::from(&long_str);
     assert!(needs_verbatim_prefix(&long));
+}
+
+// ── Windows ACL fixture helpers ──────────────────────────────────────────────
+
+/// Resolve the current user's SID with `whoami` (shipped with Windows, so the
+/// fixture needs no extra dependency).
+#[cfg(target_os = "windows")]
+fn current_user_sid() -> Option<String> {
+    let output = std::process::Command::new("whoami")
+        .args(["/user", "/fo", "csv", "/nh"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // CSV row: "DOMAIN\user","S-1-5-21-…".  Skip the integrity-label SIDs
+    // (S-1-16-…) that can appear in localized output.
+    String::from_utf8_lossy(&output.stdout)
+        .split('"')
+        .find(|field| field.starts_with("S-1-") && !field.starts_with("S-1-16"))
+        .map(str::to_owned)
+}
+
+/// Run `icacls <dir> <args>` and return `(success, combined output)`.
+#[cfg(target_os = "windows")]
+fn run_icacls(dir: &std::path::Path, args: &[&str]) -> (bool, String) {
+    let output = std::process::Command::new("icacls")
+        .arg(dir)
+        .args(args)
+        .output()
+        .expect("failed to run icacls");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (output.status.success(), text)
 }
