@@ -1,6 +1,14 @@
 name: Tranche 2 validation
 
-on: workflow_dispatch
+# `push` is present only so GitHub registers the workflow_dispatch trigger
+# correctly (actions/runner#4001 turns dispatch-only workflows into
+# push-only ones); the paths filter plus the job guard below keep pushes
+# inert unless this very file changes.
+on:
+  push:
+    paths:
+      - '.github/workflows/tranche2-validation.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -10,6 +18,7 @@ env:
 
 jobs:
   validation:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
