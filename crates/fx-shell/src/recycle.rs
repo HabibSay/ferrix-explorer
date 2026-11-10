@@ -289,6 +289,8 @@ fn find_and_restore(bin: &IShellFolder, wanted: &str) -> Result<(), ShellRecycle
 
         let mut matched: Option<*mut ITEMIDLIST> = None;
         let mut display_buf = [0u16; 512];
+        let mut total = 0usize;
+        let mut seen: Vec<String> = Vec::new();
 
         loop {
             let mut slot: [*mut ITEMIDLIST; 1] = [ptr::null_mut()];
@@ -301,6 +303,7 @@ fn find_and_restore(bin: &IShellFolder, wanted: &str) -> Result<(), ShellRecycle
             if item.is_null() {
                 continue;
             }
+            total += 1;
 
             let mut name_ok = false;
             let mut strret = STRRET::default();
@@ -314,6 +317,9 @@ fn find_and_restore(bin: &IShellFolder, wanted: &str) -> Result<(), ShellRecycle
                     .position(|c| *c == 0)
                     .unwrap_or(display_buf.len());
                 let shown = String::from_utf16_lossy(&display_buf[..end]);
+                if seen.len() < 6 {
+                    seen.push(shown.clone());
+                }
                 // Validated on Windows 11 build 22631: SHGDN_NORMAL on the bitbucket
                 // folder yields the item's original full path. Match its file name so
                 // the comparison is independent of how the path is displayed; a bare
@@ -324,6 +330,8 @@ fn find_and_restore(bin: &IShellFolder, wanted: &str) -> Result<(), ShellRecycle
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| shown.clone());
                 name_ok = base.eq_ignore_ascii_case(wanted);
+            } else if seen.len() < 6 {
+                seen.push("<display name unavailable>".into());
             }
 
             if name_ok {
@@ -344,7 +352,14 @@ fn find_and_restore(bin: &IShellFolder, wanted: &str) -> Result<(), ShellRecycle
         }
 
         let target = matched.ok_or_else(|| {
-            ShellRecycleError::NotAvailable(format!("no Recycle Bin item named '{wanted}'"))
+            let names = if seen.is_empty() {
+                "no items".to_string()
+            } else {
+                seen.join(" | ")
+            };
+            ShellRecycleError::NotAvailable(format!(
+                "no Recycle Bin item named '{wanted}' ({total} enumerated; saw: {names})"
+            ))
         })?;
 
         let result = invoke_restore_verb(bin, target);
