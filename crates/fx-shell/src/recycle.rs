@@ -314,9 +314,11 @@ fn find_and_restore(bin: &IShellFolder, wanted: &str) -> Result<(), ShellRecycle
             }
             total += 1;
 
-            // Primary source: the original name in the item's `$I` record, which
-            // always keeps the extension even when the display name hides it.
-            let mut name_ok = original_name_via_i(bin, item)
+            // Primary source: the item's parsing name / `$I` record, which keeps the
+            // extension even when the display name hides it.
+            let i_source = original_name_via_i(bin, item);
+            let mut name_ok = i_source
+                .as_ref()
                 .map(|name| name.eq_ignore_ascii_case(wanted))
                 .unwrap_or(false);
 
@@ -332,7 +334,10 @@ fn find_and_restore(bin: &IShellFolder, wanted: &str) -> Result<(), ShellRecycle
                     .unwrap_or(display_buf.len());
                 let shown = String::from_utf16_lossy(&display_buf[..end]);
                 if seen.len() < 6 {
-                    seen.push(shown.clone());
+                    match &i_source {
+                        Ok(name) => seen.push(format!("{shown} [i:{name}]")),
+                        Err(reason) => seen.push(format!("{shown} [i:ERR {reason}]")),
+                    }
                 }
                 // Fallback: SHGDN_NORMAL on the bitbucket folder yields the item's
                 // original full path on Windows 11 build 22631 (bare name on other
@@ -347,7 +352,12 @@ fn find_and_restore(bin: &IShellFolder, wanted: &str) -> Result<(), ShellRecycle
                     name_ok = base.eq_ignore_ascii_case(wanted);
                 }
             } else if seen.len() < 6 {
-                seen.push("<display name unavailable>".into());
+                match &i_source {
+                    Ok(name) => seen.push(format!("<display name unavailable> [i:{name}]")),
+                    Err(reason) => {
+                        seen.push(format!("<display name unavailable> [i:ERR {reason}]"))
+                    }
+                }
             }
 
             if name_ok {
@@ -384,35 +394,54 @@ fn find_and_restore(bin: &IShellFolder, wanted: &str) -> Result<(), ShellRecycle
     }
 }
 
-/// Reads the original file name from the item's `$I` record.
+/// Reads the original file name for an item from its Shell parsing name and, when
+/// that is the `$R` file, from the sibling `$I` record.
 ///
 /// The Shell's display name honours Explorer's "hide extensions for known file
 /// types" setting (a default Windows shows `...\fx-restore-probe` without `.txt`),
-/// so it cannot be matched reliably across hosts. The `$I` record always stores the
-/// original path; returns `None` when the record is missing or unreadable so the
-/// caller can fall back to the display name.
-fn original_name_via_i(bin: &IShellFolder, item: *const ITEMIDLIST) -> Option<String> {
+/// so it cannot be matched reliably across hosts. Returns `Ok(original name)` or
+/// `Err(short reason)` for the caller's diagnostics.
+fn original_name_via_i(bin: &IShellFolder, item: *const ITEMIDLIST) -> Result<String, String> {
     // SAFETY: `item` is a valid PIDL the caller owns for this call; `strret` and
     // `buf` are caller-owned out-parameters that outlive the COM calls.
     unsafe {
         let mut strret = STRRET::default();
-        // SHGDN_FORPARSING: on the bitbucket folder this yields the `$R` file path
-        // (validated on Windows 11 build 22631).
+        // SHGDN_FORPARSING: the item's machine name in the Recycle Bin folder.
         bin.GetDisplayNameOf(item, SHGDNF(0x4000), &raw mut strret)
-            .ok()?;
+            .map_err(|e| format!("parsing name failed: {e}"))?;
         let mut buf = [0u16; 512];
-        StrRetToBufW(&raw mut strret, Some(item), &mut buf).ok()?;
+        StrRetToBufW(&raw mut strret, Some(item), &mut buf)
+            .map_err(|e| format!("StrRetToBufW failed: {e}"))?;
         let end = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
         let parsing = String::from_utf16_lossy(&buf[..end]);
-        let r_path = Path::new(&parsing);
-        let r_name = r_path.file_name()?.to_string_lossy().into_owned();
-        if !r_name.starts_with("$R") {
-            return None;
+        let p_path = Path::new(&parsing);
+        let p_name = p_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or_else(|| format!("no file name in '{parsing}'"))?;
+
+        if let Some(r_suffix) = p_name.strip_prefix("$R") {
+            // Sibling `$I` record of the `$R…` file: the authoritative original path.
+            let i_path = p_path.with_file_name(format!("$I{r_suffix}"));
+            let bytes =
+                std::fs::read(&i_path).map_err(|e| format!("read '{i_path:?}' failed: {e}"))?;
+            return parse_i_original_name(&bytes)
+                .ok_or_else(|| format!("$I parse failed for '{i_path:?}'"));
         }
-        let i_path = r_path.with_file_name(format!("$I{}", &r_name[2..]));
-        let bytes = std::fs::read(i_path).ok()?;
-        parse_i_original_name(&bytes)
+
+        // Some builds expose the original path as the parsing name; it then carries
+        // the real file name (parsing names are not extension-hidden).
+        if is_absoluteish(p_path) {
+            return Ok(p_name);
+        }
+        Err(format!("unexpected parsing name '{parsing}'"))
     }
+}
+
+/// `C:\…` or `\\server\…`.
+fn is_absoluteish(path: &Path) -> bool {
+    let raw = path.to_string_lossy();
+    (raw.len() >= 3 && raw.as_bytes()[1] == b':') || raw.starts_with(r"\\")
 }
 
 /// Parses the original path out of an `$I` record: 8-byte version (1 or 2),
@@ -443,8 +472,7 @@ fn parse_i_original_name(bytes: &[u8]) -> Option<String> {
     }
     // A stored absolute path has a drive letter (`C:\…`) or a UNC prefix; anything
     // else means the layout assumptions above do not hold on this build.
-    let plausible = (path.len() >= 3 && path.as_bytes()[1] == b':') || path.starts_with(r"\\");
-    if !plausible {
+    if !is_absoluteish(Path::new(&path)) {
         return None;
     }
     Path::new(&path)
