@@ -320,11 +320,13 @@ mod tests {
         let mut store = ActivityStore::new();
         let first = OperationId::next();
         store.push(first, meta("first"));
-        for _ in 0..50 {
+        let first_newer = OperationId::next();
+        store.push(first_newer, meta("newer"));
+        for _ in 0..49 {
             store.push(OperationId::next(), meta("newer"));
         }
         assert_eq!(store.rows.len(), 50);
-        assert_eq!(store.row_id(0), Some(OperationId(first.0 + 1)));
+        assert_eq!(store.row_id(0), Some(first_newer));
     }
 
     #[test]
