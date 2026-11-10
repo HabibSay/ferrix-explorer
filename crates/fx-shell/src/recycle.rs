@@ -31,9 +31,9 @@ use windows::{
         UI::{
             Shell::Common::{ITEMIDLIST, STRRET},
             Shell::{
-                CMF_NORMAL, CSIDL_BITBUCKET, GCS_VERBA, IContextMenu, IEnumIDList, ILFree,
-                IShellFolder, SHCONTF_INCLUDEHIDDEN, SHCONTF_NONFOLDERS, SHGDNF,
-                SHGetDesktopFolder, SHGetFolderLocation, StrRetToBufW,
+                CMF_NORMAL, CSIDL_BITBUCKET, GCS_VERBA, GPFIDL_DEFAULT, IContextMenu, IEnumIDList,
+                ILFree, IShellFolder, SHCONTF_INCLUDEHIDDEN, SHCONTF_NONFOLDERS, SHGDNF,
+                SHGetDesktopFolder, SHGetFolderLocation, SHGetPathFromIDListEx, StrRetToBufW,
             },
             WindowsAndMessaging::{
                 CreatePopupMenu, DestroyMenu, GetMenuItemCount, GetMenuItemID, HMENU,
@@ -394,19 +394,49 @@ fn find_and_restore(bin: &IShellFolder, wanted: &str) -> Result<(), ShellRecycle
     }
 }
 
-/// Reads the original file name for an item from its Shell parsing name and, when
-/// that is the `$R` file, from the sibling `$I` record.
+/// Reads the original file name for an item from its Shell names.
 ///
-/// The Shell's display name honours Explorer's "hide extensions for known file
-/// types" setting (a default Windows shows `...\fx-restore-probe` without `.txt`),
-/// so it cannot be matched reliably across hosts. Returns `Ok(original name)` or
-/// `Err(short reason)` for the caller's diagnostics.
+/// The Shell's display name (and on some builds the parsing name too) honours
+/// Explorer's "hide extensions for known file types" setting (a default Windows
+/// shows `...\fx-restore-probe` without `.txt`), so those cannot be matched
+/// reliably across hosts. Strategy, in order:
+/// 1. `SHGetPathFromIDListEx` — the item's real filesystem path (the `$R` file);
+///    read the sibling `$I` record, which stores the original path.
+/// 2. The parsing name, when it is already an absolute path.
+/// 3. The caller falls back to the display name.
+///
+/// Returns `Ok(original name)` or `Err(short reason)` for the caller's diagnostics.
 fn original_name_via_i(bin: &IShellFolder, item: *const ITEMIDLIST) -> Result<String, String> {
     // SAFETY: `item` is a valid PIDL the caller owns for this call; `strret` and
-    // `buf` are caller-owned out-parameters that outlive the COM calls.
+    // the buffers are caller-owned out-parameters that outlive the COM calls.
     unsafe {
+        // 1) Real filesystem path of the item — not subject to display settings.
+        let mut fs_buf = [0u16; 512];
+        if SHGetPathFromIDListEx(item, &mut fs_buf, GPFIDL_DEFAULT).as_bool() {
+            let end = fs_buf.iter().position(|c| *c == 0).unwrap_or(fs_buf.len());
+            let fs_str = String::from_utf16_lossy(&fs_buf[..end]);
+            let fs_path = Path::new(&fs_str);
+            if let Some(fs_name) = fs_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+            {
+                if let Some(r_suffix) = fs_name.strip_prefix("$R") {
+                    let i_path = fs_path.with_file_name(format!("$I{r_suffix}"));
+                    let bytes = std::fs::read(&i_path)
+                        .map_err(|e| format!("read '{i_path:?}' failed: {e}"))?;
+                    return parse_i_original_name(&bytes)
+                        .ok_or_else(|| format!("$I parse failed for '{i_path:?}'"));
+                }
+                // Not a `$R` file: the API handed back an absolute path that already
+                // carries the real file name (filesystem names keep their extension).
+                if is_absoluteish(fs_path) {
+                    return Ok(fs_name);
+                }
+            }
+        }
+
+        // 2) Parsing name: `$R` sibling on some builds, original path on others.
         let mut strret = STRRET::default();
-        // SHGDN_FORPARSING: the item's machine name in the Recycle Bin folder.
         bin.GetDisplayNameOf(item, SHGDNF(0x4000), &raw mut strret)
             .map_err(|e| format!("parsing name failed: {e}"))?;
         let mut buf = [0u16; 512];
@@ -429,12 +459,12 @@ fn original_name_via_i(bin: &IShellFolder, item: *const ITEMIDLIST) -> Result<St
                 .ok_or_else(|| format!("$I parse failed for '{i_path:?}'"));
         }
 
-        // Some builds expose the original path as the parsing name; it then carries
-        // the real file name (parsing names are not extension-hidden).
         if is_absoluteish(p_path) {
             return Ok(p_name);
         }
-        Err(format!("unexpected parsing name '{parsing}'"))
+        Err(format!(
+            "fs path unavailable; unexpected parsing name '{parsing}'"
+        ))
     }
 }
 
