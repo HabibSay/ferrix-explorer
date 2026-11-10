@@ -237,13 +237,19 @@ fn copies_a_file_and_preserves_contents() {
 /// Creates a file symlink, returning false when the host refuses: creating a symbolic
 /// link on Windows needs the SeCreateSymbolicLink privilege or Developer Mode.
 fn make_symlink(target: &Path, link: &Path) -> bool {
+    // Create a relative link so `fs::read_link` returns a stable, host-independent
+    // target (the entry name) rather than an absolute temp path.
+    let relative = target
+        .file_name()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| target.to_path_buf());
     #[cfg(windows)]
     {
-        std::os::windows::fs::symlink_file(target, link).is_ok()
+        std::os::windows::fs::symlink_file(&relative, link).is_ok()
     }
     #[cfg(not(windows))]
     {
-        std::os::unix::fs::symlink(target, link).is_ok()
+        std::os::unix::fs::symlink(&relative, link).is_ok()
     }
 }
 
@@ -276,13 +282,17 @@ fn a_symbolic_link_is_recreated_as_a_link_not_copied() {
 
     assert_eq!(
         created.lock().unwrap().clone(),
-        vec![(payload.clone(), destination.join("link.txt"), false)],
+        vec![(
+            PathBuf::from("payload.txt"),
+            destination.join("link.txt"),
+            false
+        )],
         "the engine must ask the platform to recreate the link"
     );
     assert_eq!(summary.files_failed, 0, "{:?}", summary.failures);
     assert_eq!(
         fs::read(destination.join("link.txt")).unwrap(),
-        b"link to payload".as_slice(),
+        b"link to payload.txt".as_slice(),
         "the payload itself must not be copied"
     );
     assert!(link.exists(), "a copy never deletes the source");
