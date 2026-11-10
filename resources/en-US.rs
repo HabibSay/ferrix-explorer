@@ -4,7 +4,7 @@
 //! keep identifiers stable; no user-visible text should be hard-coded in UI code.
 
 /// Caption of the top-level window. Also used as the window's UI Automation name.
-pub const APP_TITLE: &str = "Ferrix Explorer — Tranche 0";
+pub const APP_TITLE: &str = "Ferrix Explorer — Tranche 2";
 
 /// Label of the app-local `IContextMenu` command.
 pub const ABOUT_MENU_LABEL: &str = "About Ferrix";
