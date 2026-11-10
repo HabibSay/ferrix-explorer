@@ -1,5 +1,4 @@
 name: Tranche 2 validation
-run-name: Tranche 2 validation (${{ github.ref_name }})
 
 on: workflow_dispatch
 
