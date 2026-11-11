@@ -9,9 +9,10 @@
 //! folder and invoke the item's own Restore verb, matched by its **language-independent
 //! canonical verb token** (`GCS_VERBA` = `"undelete"` on Windows 11 build 22631;
 //! `"restore"` is also accepted for other Windows builds), never by localized menu text.
-//! Items are matched by the original name stored in their `$I` record — the Shell's
-//! display name hides known file extensions on default Explorer settings — falling back
-//! to the display name. `$I`/`$R` records are read only and never written or moved here.
+//! Items are matched against their original path: the Shell's display name is that
+//! path (a bare name on some builds) with the extension possibly hidden by Explorer's
+//! default settings, while the caller holds it with the extension. `$I`/`$R` records
+//! are read only for the identity diff and never written or moved here.
 //! PRD 10.5: the COM calls run on a worker thread that explicitly initializes an STA.
 
 use std::{
@@ -31,9 +32,9 @@ use windows::{
         UI::{
             Shell::Common::{ITEMIDLIST, STRRET},
             Shell::{
-                CMF_NORMAL, CSIDL_BITBUCKET, GCS_VERBA, GPFIDL_DEFAULT, IContextMenu, IEnumIDList,
-                ILFree, IShellFolder, SHCONTF_INCLUDEHIDDEN, SHCONTF_NONFOLDERS, SHGDNF,
-                SHGetDesktopFolder, SHGetFolderLocation, SHGetPathFromIDListEx, StrRetToBufW,
+                CMF_NORMAL, CSIDL_BITBUCKET, GCS_VERBA, IContextMenu, IEnumIDList, ILFree,
+                IShellFolder, SHCONTF_INCLUDEHIDDEN, SHCONTF_NONFOLDERS, SHGDNF,
+                SHGetDesktopFolder, SHGetFolderLocation, StrRetToBufW,
             },
             WindowsAndMessaging::{
                 CreatePopupMenu, DestroyMenu, GetMenuItemCount, GetMenuItemID, HMENU,
@@ -230,17 +231,19 @@ impl Drop for Apartment {
 }
 
 /// Restores a recycled item by invoking the Recycle Bin shell item's own "restore"
-/// verb (decision 3). The item is matched by display name (which the Recycle Bin
-/// shows as the original file name); two items sharing that name are treated as
-/// ambiguous and refused, mirroring the spec's identity rule.
+/// verb (decision 3). The item is matched against the original path, tolerant of the
+/// Shell hiding the file extension in its display name; two items claiming the same
+/// name are treated as ambiguous and refused, mirroring the spec's identity rule.
 pub fn restore_recycled_item(original: &Path) -> Result<(), ShellRecycleError> {
     if original.to_string_lossy().len() >= 260 {
         return Err(ShellRecycleError::LongPath);
     }
-    let wanted = original
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .ok_or_else(|| ShellRecycleError::NotAvailable("path has no file name".into()))?;
+    if original.file_name().is_none() {
+        return Err(ShellRecycleError::NotAvailable(
+            "path has no file name".into(),
+        ));
+    }
+    let wanted = original.to_string_lossy().into_owned();
 
     let _apartment = Apartment::new()?;
 
@@ -277,8 +280,9 @@ pub fn restore_recycled_item(original: &Path) -> Result<(), ShellRecycleError> {
     }
 }
 
-/// Enumerates the bin folder, matches the item by display name and invokes its
-/// canonical `restore` verb. Refuses on zero or multiple name matches.
+/// Enumerates the bin folder, matches the item against the original path (tolerant
+/// of the Shell hiding the file extension) and invokes its canonical `restore`
+/// verb. Refuses on zero or multiple matches.
 fn find_and_restore(bin: &IShellFolder, wanted: &str) -> Result<(), ShellRecycleError> {
     // SAFETY: `bin` and the enumerator are valid COM objects on this STA thread; each
     // PIDL fetched from the enumerator is either kept for the verb invocation or freed
@@ -314,16 +318,8 @@ fn find_and_restore(bin: &IShellFolder, wanted: &str) -> Result<(), ShellRecycle
             }
             total += 1;
 
-            // Primary source: the item's parsing name / `$I` record, which keeps the
-            // extension even when the display name hides it.
-            let i_source = original_name_via_i(bin, item);
-            let mut name_ok = i_source
-                .as_ref()
-                .map(|name| name.eq_ignore_ascii_case(wanted))
-                .unwrap_or(false);
-
             let mut strret = STRRET::default();
-            if bin
+            let name_ok = if bin
                 .GetDisplayNameOf(item, SHGDNF(0), &raw mut strret)
                 .is_ok()
                 && StrRetToBufW(&raw mut strret, Some(item), &mut display_buf).is_ok()
@@ -334,31 +330,18 @@ fn find_and_restore(bin: &IShellFolder, wanted: &str) -> Result<(), ShellRecycle
                     .unwrap_or(display_buf.len());
                 let shown = String::from_utf16_lossy(&display_buf[..end]);
                 if seen.len() < 6 {
-                    match &i_source {
-                        Ok(name) => seen.push(format!("{shown} [i:{name}]")),
-                        Err(reason) => seen.push(format!("{shown} [i:ERR {reason}]")),
-                    }
+                    seen.push(shown.clone());
                 }
-                // Fallback: SHGDN_NORMAL on the bitbucket folder yields the item's
-                // original full path on Windows 11 build 22631 (bare name on other
-                // builds, extension possibly hidden by Explorer settings). Match its
-                // file name so the comparison is independent of how the path is
-                // displayed; Windows names are case-insensitive.
-                if !name_ok {
-                    let base = std::path::Path::new(&shown)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| shown.clone());
-                    name_ok = base.eq_ignore_ascii_case(wanted);
+                // The display name is the original path (a bare name on some builds)
+                // with the extension possibly hidden by Explorer settings; `wanted` is
+                // the original path with its extension.
+                display_matches(&shown, wanted)
+            } else {
+                if seen.len() < 6 {
+                    seen.push("<display name unavailable>".into());
                 }
-            } else if seen.len() < 6 {
-                match &i_source {
-                    Ok(name) => seen.push(format!("<display name unavailable> [i:{name}]")),
-                    Err(reason) => {
-                        seen.push(format!("<display name unavailable> [i:ERR {reason}]"))
-                    }
-                }
-            }
+                false
+            };
 
             if name_ok {
                 if matched.is_some() {
@@ -394,120 +377,46 @@ fn find_and_restore(bin: &IShellFolder, wanted: &str) -> Result<(), ShellRecycle
     }
 }
 
-/// Reads the original file name for an item from its Shell names.
+/// Whether the Shell display name of a Recycle Bin item identifies the original
+/// file `wanted`.
 ///
-/// The Shell's display name (and on some builds the parsing name too) honours
-/// Explorer's "hide extensions for known file types" setting (a default Windows
-/// shows `...\fx-restore-probe` without `.txt`), so those cannot be matched
-/// reliably across hosts. Strategy, in order:
-/// 1. `SHGetPathFromIDListEx` — the item's real filesystem path (the `$R` file);
-///    read the sibling `$I` record, which stores the original path.
-/// 2. The parsing name, when it is already an absolute path.
-/// 3. The caller falls back to the display name.
-///
-/// Returns `Ok(original name)` or `Err(short reason)` for the caller's diagnostics.
-fn original_name_via_i(bin: &IShellFolder, item: *const ITEMIDLIST) -> Result<String, String> {
-    // SAFETY: `item` is a valid PIDL the caller owns for this call; `strret` and
-    // the buffers are caller-owned out-parameters that outlive the COM calls.
-    unsafe {
-        // 1) Real filesystem path of the item — not subject to display settings.
-        let mut fs_buf = [0u16; 512];
-        if SHGetPathFromIDListEx(item, &mut fs_buf, GPFIDL_DEFAULT).as_bool() {
-            let end = fs_buf.iter().position(|c| *c == 0).unwrap_or(fs_buf.len());
-            let fs_str = String::from_utf16_lossy(&fs_buf[..end]);
-            let fs_path = Path::new(&fs_str);
-            if let Some(fs_name) = fs_path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-            {
-                if let Some(r_suffix) = fs_name.strip_prefix("$R") {
-                    let i_path = fs_path.with_file_name(format!("$I{r_suffix}"));
-                    let bytes = std::fs::read(&i_path)
-                        .map_err(|e| format!("read '{i_path:?}' failed: {e}"))?;
-                    return parse_i_original_name(&bytes)
-                        .ok_or_else(|| format!("$I parse failed for '{i_path:?}'"));
-                }
-                // Not a `$R` file: the API handed back an absolute path that already
-                // carries the real file name (filesystem names keep their extension).
-                if is_absoluteish(fs_path) {
-                    return Ok(fs_name);
-                }
-            }
-        }
+/// The display name is the original path (a bare name on some builds) with the
+/// extension possibly hidden by Explorer's "hide extensions" default, while
+/// `wanted` is the original path with its extension. A display that carries a
+/// directory must equal the original path with or without its extension; only a
+/// bare display name falls back to file-name comparison. Windows names compare
+/// case-insensitively.
+fn display_matches(shown: &str, wanted: &str) -> bool {
+    let shown_base = Path::new(shown)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| shown.to_string());
+    let wanted_path = Path::new(wanted);
 
-        // 2) Parsing name: `$R` sibling on some builds, original path on others.
-        let mut strret = STRRET::default();
-        bin.GetDisplayNameOf(item, SHGDNF(0x4000), &raw mut strret)
-            .map_err(|e| format!("parsing name failed: {e}"))?;
-        let mut buf = [0u16; 512];
-        StrRetToBufW(&raw mut strret, Some(item), &mut buf)
-            .map_err(|e| format!("StrRetToBufW failed: {e}"))?;
-        let end = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
-        let parsing = String::from_utf16_lossy(&buf[..end]);
-        let p_path = Path::new(&parsing);
-        let p_name = p_path
+    if shown != shown_base {
+        let wanted_no_ext = wanted_path
+            .with_extension("")
+            .to_string_lossy()
+            .into_owned();
+        shown.eq_ignore_ascii_case(wanted) || shown.eq_ignore_ascii_case(&wanted_no_ext)
+    } else {
+        let wanted_base = wanted_path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
-            .ok_or_else(|| format!("no file name in '{parsing}'"))?;
-
-        if let Some(r_suffix) = p_name.strip_prefix("$R") {
-            // Sibling `$I` record of the `$R…` file: the authoritative original path.
-            let i_path = p_path.with_file_name(format!("$I{r_suffix}"));
-            let bytes =
-                std::fs::read(&i_path).map_err(|e| format!("read '{i_path:?}' failed: {e}"))?;
-            return parse_i_original_name(&bytes)
-                .ok_or_else(|| format!("$I parse failed for '{i_path:?}'"));
-        }
-
-        if is_absoluteish(p_path) {
-            return Ok(p_name);
-        }
-        Err(format!(
-            "fs path unavailable; unexpected parsing name '{parsing}'"
-        ))
+            .unwrap_or_else(|| wanted.to_string());
+        let base_no_ext = strip_last_extension(&wanted_base);
+        shown_base.eq_ignore_ascii_case(&wanted_base)
+            || shown_base.eq_ignore_ascii_case(&base_no_ext)
     }
 }
 
-/// `C:\…` or `\\server\…`.
-fn is_absoluteish(path: &Path) -> bool {
-    let raw = path.to_string_lossy();
-    (raw.len() >= 3 && raw.as_bytes()[1] == b':') || raw.starts_with(r"\\")
-}
-
-/// Parses the original path out of an `$I` record: 8-byte version (1 or 2),
-/// 8-byte file size, 8-byte delete time, 4-byte UTF-16 length, then the path.
-fn parse_i_original_name(bytes: &[u8]) -> Option<String> {
-    if bytes.len() < 28 {
-        return None;
+/// Removes the last extension (`report.tar.gz` to `report.tar`); names without an
+/// extension and names starting with a dot are returned unchanged.
+fn strip_last_extension(name: &str) -> String {
+    match name.rfind('.') {
+        Some(pos) if pos > 0 => name[..pos].to_string(),
+        _ => name.to_string(),
     }
-    let version = u64::from_le_bytes(bytes[0..8].try_into().ok()?);
-    if version != 1 && version != 2 {
-        return None;
-    }
-    let chars = u32::from_le_bytes(bytes[24..28].try_into().ok()?) as usize;
-    let needed = 28usize.checked_add(chars.checked_mul(2)?)?;
-    if chars == 0 || bytes.len() < needed {
-        return None;
-    }
-    let mut units = Vec::with_capacity(chars);
-    for index in 0..chars {
-        units.push(u16::from_le_bytes([
-            bytes[28 + index * 2],
-            bytes[28 + index * 2 + 1],
-        ]));
-    }
-    let mut path = String::from_utf16(&units).ok()?;
-    while path.ends_with('\0') {
-        path.pop();
-    }
-    // A stored absolute path has a drive letter (`C:\…`) or a UNC prefix; anything
-    // else means the layout assumptions above do not hold on this build.
-    if !is_absoluteish(Path::new(&path)) {
-        return None;
-    }
-    Path::new(&path)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
 }
 
 fn invoke_restore_verb(bin: &IShellFolder, item: *mut ITEMIDLIST) -> Result<(), ShellRecycleError> {
@@ -592,48 +501,58 @@ fn invoke_restore_verb(bin: &IShellFolder, item: *mut ITEMIDLIST) -> Result<(), 
 }
 
 #[cfg(test)]
-mod i_record_tests {
-    use super::parse_i_original_name;
+mod display_match_tests {
+    use super::display_matches;
 
-    fn i_record(path: &str, version: u64) -> Vec<u8> {
-        let units: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&version.to_le_bytes());
-        bytes.extend_from_slice(&42u64.to_le_bytes());
-        bytes.extend_from_slice(&0u64.to_le_bytes());
-        bytes.extend_from_slice(&(units.len() as u32).to_le_bytes());
-        for unit in units {
-            bytes.extend_from_slice(&unit.to_le_bytes());
-        }
-        bytes
+    #[test]
+    fn matches_the_exact_original_path() {
+        assert!(display_matches(
+            r"C:\Users\alice\AppData\Local\Temp\fx-restore-probe.txt",
+            r"C:\Users\alice\AppData\Local\Temp\fx-restore-probe.txt",
+        ));
     }
 
     #[test]
-    fn reads_the_original_name_with_its_extension() {
-        let bytes = i_record(r"C:\Users\alice\AppData\Local\Temp\fx-restore-probe.txt", 1);
-        assert_eq!(
-            parse_i_original_name(&bytes).as_deref(),
-            Some("fx-restore-probe.txt")
-        );
+    fn matches_when_the_shell_hides_the_extension() {
+        assert!(display_matches(
+            r"C:\Users\alice\AppData\Local\Temp\fx-restore-probe",
+            r"C:\Users\alice\AppData\Local\Temp\fx-restore-probe.txt",
+        ));
     }
 
     #[test]
-    fn accepts_the_version_2_layout() {
-        let bytes = i_record(r"D:\data\report.pdf", 2);
-        assert_eq!(parse_i_original_name(&bytes).as_deref(), Some("report.pdf"));
+    fn matches_a_bare_display_name_with_visible_or_hidden_extension() {
+        assert!(display_matches(
+            "fx-restore-probe.txt",
+            r"C:\t\fx-restore-probe.txt"
+        ));
+        assert!(display_matches(
+            "fx-restore-probe",
+            r"C:\t\fx-restore-probe.txt"
+        ));
     }
 
     #[test]
-    fn rejects_truncated_unknown_version_or_implausible_records() {
-        assert_eq!(parse_i_original_name(&[0u8; 10]), None);
-        assert_eq!(
-            parse_i_original_name(&i_record(r"C:\x.txt", 99)[..20]),
-            None,
-            "unknown versions must not be parsed with v1 offsets"
-        );
-        assert_eq!(parse_i_original_name(&i_record("relative.txt", 1)), None);
-        let mut truncated = i_record(r"C:\long\path\file.txt", 1);
-        truncated.truncate(30);
-        assert_eq!(parse_i_original_name(&truncated), None);
+    fn does_not_match_a_different_file() {
+        assert!(!display_matches(
+            r"C:\t\other",
+            r"C:\t\fx-restore-probe.txt"
+        ));
+        assert!(!display_matches(
+            r"C:\t\fx-restore-probe.log",
+            r"C:\t\fx-restore-probe.txt"
+        ));
+        assert!(!display_matches(
+            r"C:\elsewhere\fx-restore-probe",
+            r"C:\t\fx-restore-probe.txt"
+        ));
+    }
+
+    #[test]
+    fn is_case_insensitive_for_ascii_names() {
+        assert!(display_matches(
+            r"C:\T\FX-RESTORE-PROBE",
+            r"c:\t\fx-restore-probe.txt"
+        ));
     }
 }
