@@ -2,6 +2,7 @@
 
 Run date: **2026-11-06**. Host: Windows 11 (build 22631), single user session.
 Re-validation session: **2026-11-09** (see the 11-09 addendum at the bottom).
+Runner session: **2026-11-10/11** (see the 11-10/11 addendum at the bottom).
 
 **Blocked-status note (read first).** From ~19:30 UTC on the run date, the workstation's
 third-party security layer (Windows Defender real-time protection is *disabled* on this
@@ -169,3 +170,115 @@ warning appears then is untested on this host (row 18's run procedure).
   5–8, 10–15, 17–18, 20–23, 24 visible-UI halves).
 - The verification-order caveat for row 2 stays: no restore-capability claim until
   `recycle_then_restore_round_trip` is observed PASS end-to-end.
+
+## Addendum — runner validation session 2026-11-10/11
+
+The workstation's security layer still refuses freshly linked test binaries, so the
+automated half of this checklist was executed on a real Windows machine instead: GitHub
+Actions `windows-latest`, workflow `.github/workflows/tranche2-validation.yml`
+(workflow id 413417542, dispatched from `tranche-2-file-operations`), plus the standing
+`ci.yml` gate on every push. Evidence: each run's `tranche-2-validation-evidence` artifact
+(`validation-recycle-bin.txt`, `validation-workspace.txt`); run ids below.
+
+### Runner environment (observed, CLAUDE.md rule 8)
+
+- Microsoft Windows Server 2025, `10.0.26100.33674`, image `windows-2025-vs2026`
+  `20261103.298.1`, runner 2.338.2; job user `runnervmm7ud1\runneradmin` — the built-in
+  Administrator (RID 500), token **elevated** (full admin privilege set present).
+- `%TEMP%` resolves in **8.3 form** (`C:\Users\RUNNER~1\AppData\Local\Temp\…`) while the
+  Shell canonicalises to `runneradmin` — path comparisons must normalise the parent
+  (`recycle.rs::long_form`).
+- The Shell returns display names **without the file extension** (the image's default
+  "hide extensions" setting); matching therefore accepts the original path with or
+  without its last extension (`recycle.rs::display_matches`).
+- `SHGetPathFromIDListEx` on a *relative* PIDL resolves to a bogus
+  `Desktop\$R…` path on this build — unusable for matching; the mechanism was removed.
+- Workflow dispatch returned 422 until an unquoted `:` inside a step name was quoted
+  (`e23d1ad`); `actions/runner#4001` still produces phantom dispatch-only runs that
+  report `skipped` — filter by `head_sha`.
+
+### The `access_denied_continues` gate failure and its root cause
+
+`fx-fs::listing_tests::access_denied_continues` denies `RD` on a fixture directory with
+`icacls /deny *SID:(RD)` and requires `list_directory` to report an `AccessDenied` batch.
+It passed CI on every push while failing the validation gate on every run with the
+**same binary** (`listing_tests-fc11a1f2c6a7cfca`). Instrumentation added for the
+diagnosis (`3b503a7` fixture assertion, `575a196` forensics dump) proved:
+
+- the deny ACE **is present** (icacls read-back shows `runneradmin:(DENY)(RD)` for the
+  process's own SID) and icacls reports success;
+- `read_dir` still succeeds **because the test process runs with `SeBackupPrivilege`
+  and `SeRestorePrivilege` Enabled**, which bypass the DACL for read access when the
+  directory is opened with backup semantics;
+- the enabled state is introduced by the **step shell**, not by the recycle suite.
+  Probe matrix (whoami /priv, run 43042532218; the probes are kept in the workflow):
+
+  | step | SeBackup / SeRestore |
+  |---|---|
+  | pwsh, before the recycle suite | **Disabled** |
+  | git-bash, before the recycle suite | **Enabled** |
+  | git-bash, after the recycle suite | **Enabled** |
+  | pwsh, after the recycle suite | **Disabled** |
+  | test process spawned under bash (earlier failing runs) | **Enabled** → fixture bypassed |
+
+  The worker's token is clean before *and* after the recycle suite (the suite is
+  innocent); git-bash's token shows the privileges Enabled while pwsh's shows them
+  Disabled, and the shell was the only difference between the failing gate and the
+  passing CI.
+- The workstation never reproduces this: the local account's token is UAC-filtered, so
+  `SeBackupPrivilege` is *absent* locally and the deny is always enforced under any
+  local shell.
+
+Fix: the validation gate now runs `cargo test --workspace --all-targets` under **pwsh**,
+the same shell CI uses — the documented command is shell-agnostic, no assertion was
+weakened or skipped, and under pwsh the deny is genuinely enforced (the test passed with
+the full workspace gate). The gate under git-bash on an elevated admin token remains a
+known environment trap; the test's failure dump names it (`bypass privileges: …
+Enabled`).
+
+### Restore-path fixes driven by real runs (rows 1–2)
+
+Commits on `tranche-2-file-operations`, each validated by a runner run:
+
+| commit | change |
+|---|---|
+| `c6b7259` | log every enumerated display name when no recycle item matches |
+| `f5581e0` | match by the original name parsed from the `$I` record (later removed) |
+| `946a7d7` | per-item match diagnostics; accept an absolute parsing name |
+| `6c70b4c` | attempt to resolve the item's filesystem path (`SHGetPathFromIDListEx`) — disproven on this build, reverted |
+| `42654fc` | **final matching**: the original full path from `restore_recycled_item`, accepted with or without its hidden last extension (`display_matches`) |
+| `f7ab06f` | normalise the 8.3 parent (`RUNNER~1` → `runneradmin`) before comparing (`long_form`) |
+
+### Runs
+
+| run | sha | result |
+|---|---|---|
+| 43025154773 | `f7ab06f` | recycle suite **PASS 3/3** (first end-to-end `recycle_then_restore_round_trip` ever); gate red on `access_denied_continues` |
+| 43029863062 | `3b503a7` | gate red at the new fixture assertion (deny not enforced) |
+| 43032368816 | `575a196` | forensics: ACE present, privileges Enabled → root cause |
+| 43034978597 | `3c05b2e` | probes v1; bash probe aborted (Git's GNU `whoami` rejects `/priv`) — pwsh-before **Disabled** |
+| 43036204059 | `018535d` | probes v2 (msys rewrote `/priv` into a path); pwsh before/after **Disabled**, gate red |
+| 43042532218 | `5443bbb` | **GREEN**: probe matrix above, recycle suite 3/3, full workspace gate green, evidence uploaded |
+
+CI (`ci.yml`, pwsh) is green on every push from `c6b7259` through `5443bbb`
+(fmt, check, build, test, clippy, deny, audit).
+
+### Checklist row updates (2026-11-11)
+
+| # | Item | Status | Evidence / note |
+|---|---|---|---|
+| 1 | Delete → found in Recycle Bin | **PASS (runner)** | `recycle_then_restore_round_trip` green on runs above; source gone, `$R` identity resolved |
+| 2 | Restore via undo (Shell verb path) | **PASS (automated verb path, runner)** | the same test restores the file at its original path with content, through the `undelete` verb (offset-invoked); the 11-09 verification-order caveat is satisfied. The *app-level* Ctrl+Z wiring stays with the manual rows below |
+| 4 | Clipboard CF_HDROP write/read | **PASS (auto part, runner)** | `clipboard_write_read_round_trip_keeps_effect` green on every green run; cross-app paste into Explorer stays manual (row 5) |
+| 9 | Long-path recycle | **PASS (runner)** | `long_path_recycle_reports_long_path_instead_of_silently_deleting` green |
+| 16 | No Tranche 3 code in the tree | **PASS** | grep re-run 11-11: no `IFileOperation` / `begin_io_operation` matches in `crates/` |
+| — | `access_denied_continues` (workspace gate) | **PASS (runner, pwsh)** | deny genuinely enforced under pwsh; see root-cause section for the git-bash-on-elevated-admin trap |
+
+### Left open by this session
+
+- The manual / visible-UI half of the checklist (rows 3, 5–8, 10–15, 17–18, 20–23 and
+  the visible halves of 11–13, 15, 21) — needs an interactive session on the workstation;
+  nothing here claims those.
+- Optional: replay the ignored recycle suite locally once the security layer relaxes
+  (the runner already covers rows 1–2, 4 and 9 on real Windows).
+- App-level Ctrl+Z (the undo journal wiring into the window shortcut) — manual row.
