@@ -151,6 +151,15 @@ async fn access_denied_continues() {
         denied.display()
     );
 
+    // The deny must already be effective here; otherwise the listing below
+    // cannot report anything and the failure would point at the wrong layer.
+    let enforced = std::fs::read_dir(&denied);
+    assert!(
+        enforced.is_err(),
+        "fixture not enforced: read_dir succeeded after denying RD to {sid} on {} ({output})",
+        denied.display()
+    );
+
     let location = Location::Local(denied.clone());
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     let token = CancellationToken::new();
