@@ -38,13 +38,15 @@ jobs:
       # The access_denied fixture is bypassed when SeBackupPrivilege is
       # enabled in the test process; these probes locate where the
       # validation job's token differs from CI's (shell vs recycle step).
+      # System32 whoami is absolute: under bash, PATH finds Git's GNU
+      # whoami first, which rejects /priv. Probes never fail the job.
       - name: Probe privileges (pwsh, before recycle)
         shell: pwsh
         run: whoami /priv | Select-String 'SeBackupPrivilege|SeRestorePrivilege'
 
       - name: Probe privileges (bash, before recycle)
         shell: bash
-        run: whoami /priv | grep -E 'SeBackupPrivilege|SeRestorePrivilege'
+        run: '"$SYSTEMROOT/System32/whoami.exe" /priv | grep -E "SeBackupPrivilege|SeRestorePrivilege" || true'
 
       - name: 'Recycle bin / clipboard suites (ignored: touch the real Recycle Bin and clipboard)'
         shell: bash
@@ -55,7 +57,7 @@ jobs:
 
       - name: Probe privileges (bash, after recycle)
         shell: bash
-        run: whoami /priv | grep -E 'SeBackupPrivilege|SeRestorePrivilege'
+        run: '"$SYSTEMROOT/System32/whoami.exe" /priv | grep -E "SeBackupPrivilege|SeRestorePrivilege" || true'
 
       - name: Probe privileges (pwsh, after recycle)
         shell: pwsh
