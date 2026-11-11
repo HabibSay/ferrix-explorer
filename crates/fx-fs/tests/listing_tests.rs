@@ -153,12 +153,38 @@ async fn access_denied_continues() {
 
     // The deny must already be effective here; otherwise the listing below
     // cannot report anything and the failure would point at the wrong layer.
-    let enforced = std::fs::read_dir(&denied);
-    assert!(
-        enforced.is_err(),
-        "fixture not enforced: read_dir succeeded after denying RD to {sid} on {} ({output})",
-        denied.display()
-    );
+    // When it is not, dump everything needed to tell a missing ACE (icacls
+    // wrote elsewhere) from a bypassed access check (token privilege).
+    if std::fs::read_dir(&denied).is_ok() {
+        let (_, dacl) = run_icacls(&denied, &[]);
+        let who = std::process::Command::new("whoami")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+            .unwrap_or_else(|e| format!("whoami failed: {e}"));
+        let privs = std::process::Command::new("whoami")
+            .args(["/priv"])
+            .output()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .filter(|l| {
+                        l.contains("SeBackupPrivilege")
+                            || l.contains("SeRestorePrivilege")
+                            || l.contains("SeTakeOwnershipPrivilege")
+                            || l.contains("SeSecurityPrivilege")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .unwrap_or_else(|e| format!("whoami /priv failed: {e}"));
+        panic!(
+            "fixture not enforced: read_dir succeeded after denying RD to {sid} as {who} on {}\n\
+             DACL read-back: {dacl}\n\
+             bypass privileges: {privs}\n\
+             icacls deny said: {output}",
+            denied.display()
+        );
+    }
 
     let location = Location::Local(denied.clone());
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
