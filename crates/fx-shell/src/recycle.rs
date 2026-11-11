@@ -243,7 +243,7 @@ pub fn restore_recycled_item(original: &Path) -> Result<(), ShellRecycleError> {
             "path has no file name".into(),
         ));
     }
-    let wanted = original.to_string_lossy().into_owned();
+    let wanted = long_form(original);
 
     let _apartment = Apartment::new()?;
 
@@ -377,6 +377,33 @@ fn find_and_restore(bin: &IShellFolder, wanted: &str) -> Result<(), ShellRecycle
     }
 }
 
+/// Resolves the parent directory to its long form so the path compares equal to
+/// the Shell's display name: the process environment may hand out 8.3 names (the
+/// validation runner has `RUNNER~1` in `%TEMP%`) while the Shell canonicalizes.
+/// Falls back to the input when the parent no longer exists.
+fn long_form(path: &Path) -> String {
+    let resolved = path
+        .parent()
+        .and_then(|parent| std::fs::canonicalize(parent).ok())
+        .map(|real| {
+            let raw = real.to_string_lossy();
+            let text = if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+                format!(r"\\{rest}")
+            } else if let Some(rest) = raw.strip_prefix(r"\\?\") {
+                rest.to_string()
+            } else {
+                raw.to_string()
+            };
+            let mut joined = PathBuf::from(text);
+            if let Some(name) = path.file_name() {
+                joined.push(name);
+            }
+            joined
+        })
+        .unwrap_or_else(|| path.to_path_buf());
+    resolved.to_string_lossy().into_owned()
+}
+
 /// Whether the Shell display name of a Recycle Bin item identifies the original
 /// file `wanted`.
 ///
@@ -502,7 +529,9 @@ fn invoke_restore_verb(bin: &IShellFolder, item: *mut ITEMIDLIST) -> Result<(), 
 
 #[cfg(test)]
 mod display_match_tests {
-    use super::display_matches;
+    use std::path::Path;
+
+    use super::{display_matches, long_form};
 
     #[test]
     fn matches_the_exact_original_path() {
@@ -554,5 +583,13 @@ mod display_match_tests {
             r"C:\T\FX-RESTORE-PROBE",
             r"c:\t\fx-restore-probe.txt"
         ));
+    }
+
+    #[test]
+    fn long_form_falls_back_when_the_parent_is_missing() {
+        assert_eq!(
+            long_form(Path::new(r"C:\definitely-missing\dir\file.txt")),
+            r"C:\definitely-missing\dir\file.txt"
+        );
     }
 }
