@@ -35,12 +35,31 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
+      # The access_denied fixture is bypassed when SeBackupPrivilege is
+      # enabled in the test process; these probes locate where the
+      # validation job's token differs from CI's (shell vs recycle step).
+      - name: Probe privileges (pwsh, before recycle)
+        shell: pwsh
+        run: whoami /priv | Select-String 'SeBackupPrivilege|SeRestorePrivilege'
+
+      - name: Probe privileges (bash, before recycle)
+        shell: bash
+        run: whoami /priv | grep -E 'SeBackupPrivilege|SeRestorePrivilege'
+
       - name: 'Recycle bin / clipboard suites (ignored: touch the real Recycle Bin and clipboard)'
         shell: bash
         run: |
           cargo test -p fx-shell --test recycle_bin -- --ignored --test-threads=1 \
             2>&1 | tee validation-recycle-bin.txt
           test "${PIPESTATUS[0]}" -eq 0
+
+      - name: Probe privileges (bash, after recycle)
+        shell: bash
+        run: whoami /priv | grep -E 'SeBackupPrivilege|SeRestorePrivilege'
+
+      - name: Probe privileges (pwsh, after recycle)
+        shell: pwsh
+        run: whoami /priv | Select-String 'SeBackupPrivilege|SeRestorePrivilege'
 
       - name: Full workspace gate
         shell: bash
