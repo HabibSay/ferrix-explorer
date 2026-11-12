@@ -11,6 +11,7 @@ mod strings;
 
 mod activity;
 mod conflict_dialog;
+mod context_menu;
 mod operations;
 mod orchestration;
 mod platform_ops;
@@ -248,10 +249,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .activity_retry(i.max(0) as usize);
         });
 
-        // Tranche 2: right-click over the selection → app-local menu.
+        // Tranche 3: right-click over a row → the native Windows menu (Shell verbs plus
+        // the Ferrix section), falling back to the minimal Ferrix menu.
         let orch_menu = orch.clone();
-        win.on_context_menu_requested(move |_id, _x, _y| {
-            orch_menu.lock().unwrap().on_context_menu();
+        win.on_context_menu_requested(move |id, _x, _y| {
+            let row = u64::try_from(id).ok();
+            orch_menu.lock().unwrap().on_context_menu(row);
         });
 
         // Tranche 2: internal drag-and-drop — payload arming and drop resolution.
@@ -457,6 +460,35 @@ mod tests {
             strings::KIND_REPARSE_POINT,
         ] {
             assert!(slint.contains(value), "missing from en-US.slint: {value}");
+        }
+    }
+
+    /// Tranche 3 guard (spec §11): every new user-visible string lives in
+    /// `resources/en-US.rs`, and the native menu module spells none of them out.
+    #[test]
+    fn tranche_3_native_menu_takes_its_text_from_resources() {
+        let source = include_str!("context_menu.rs");
+        for label in [
+            strings::ACTIVITY_CHECKSUMS,
+            strings::MENU_SELECT_BY_PATTERN,
+            strings::MENU_INVERT_SELECTION,
+            strings::MENU_NEW_FILE,
+            strings::ACTIVITY_CLEAN,
+            strings::MENU_COPY_PATH,
+            strings::MENU_COPY_NAME,
+            strings::MENU_PROPERTIES,
+            strings::MENU_OPEN_WITH,
+            strings::STATUS_MENU_FALLBACK,
+            strings::STATUS_MENU_EXTENSION_BLOCKED,
+        ] {
+            assert!(!label.is_empty(), "empty label in resources/en-US.rs");
+            // A hard-coded label would appear as a quoted literal; the module only
+            // names the `strings::` constants.
+            let literal = format!("\"{label}\"");
+            assert!(
+                !source.contains(&literal),
+                "the native menu hard-codes the label {label}"
+            );
         }
     }
 }

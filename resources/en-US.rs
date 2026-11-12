@@ -157,6 +157,26 @@ pub const MENU_INVERT_SELECTION: &str = "Invert selection";
 /// Context menu: create a new file.
 pub const MENU_NEW_FILE: &str = "New file";
 
+/// Context menu: copy the full path of the selection.
+pub const MENU_COPY_PATH: &str = "Copy path";
+
+/// Context menu: copy the name of the selection.
+pub const MENU_COPY_NAME: &str = "Copy name";
+
+/// Context menu: open the properties of the selection.
+pub const MENU_PROPERTIES: &str = "Properties";
+
+/// Context menu: open the "Open with" dialog of the selection.
+pub const MENU_OPEN_WITH: &str = "Open with";
+
+/// Status bar: the native menu could not be shown, so Ferrix showed its own menu.
+pub const STATUS_MENU_FALLBACK: &str =
+    "The Windows menu could not be shown; using the Ferrix menu.";
+
+/// Status bar: the chosen extension is turned off in the local list.
+pub const STATUS_MENU_EXTENSION_BLOCKED: &str =
+    "That extension is turned off in Ferrix's settings.";
+
 /// Status bar: a drag ended in the folder the items came from.
 pub const STATUS_DROP_IN_SOURCE: &str = "Dropped in the source folder — nothing to do.";
 

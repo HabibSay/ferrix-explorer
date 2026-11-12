@@ -10,7 +10,7 @@ use fx_domain::{
 };
 use fx_fs::listing::{ListingBatch, ListingError, list_directory};
 use fx_fs::watch::{LocationWatcher, NotifyWatcher, WatchEvent};
-use fx_settings::view_state::ViewStateStore;
+use fx_settings::view_state::{MenuExtensionState, ViewStateStore};
 use fx_shell::clipboard::ClipboardEffect;
 use fx_ui::ApplicationWindow;
 use fx_ui::viewmodel::FileListViewModel;
@@ -40,6 +40,8 @@ pub struct Orchestrator {
     history: NavigationHistory,
     /// Per-folder view state store.
     view_state: ViewStateStore,
+    /// Which shell extensions are blocked, and whether the native menu is used at all.
+    menu_extensions: MenuExtensionState,
     /// Tokio runtime for listing tasks.
     runtime: Runtime,
     /// Token for the most-recent listing; cancelled on every new navigation.
@@ -86,6 +88,10 @@ impl Orchestrator {
             tracing::warn!(%err, "Could not load view state; using defaults");
             ViewStateStore::new_empty()
         });
+        let menu_extensions = MenuExtensionState::load().unwrap_or_else(|err| {
+            tracing::warn!(%err, "Could not load the menu extension state; using defaults");
+            MenuExtensionState::default()
+        });
 
         let port = Arc::new(WindowsPlatformOps);
         let (operations, event_rx) = OperationRunner::new(runtime.handle().clone());
@@ -97,6 +103,7 @@ impl Orchestrator {
             view_model: Arc::new(Mutex::new(FileListViewModel::new())),
             history: NavigationHistory::new(initial_location.clone()),
             view_state,
+            menu_extensions,
             runtime,
             cancel: CancellationToken::new(),
             generation: 0,
@@ -558,57 +565,109 @@ impl Orchestrator {
         self.begin_row(id, &label, retry, touched);
     }
 
-    /// Right-click / Shift+F10 over the selection: the app-local menu carrying the
-    /// menu-driven Tranche 2 commands (PRD 13.4: checksums; OPS-11 pattern; OPS-13).
-    pub fn on_context_menu(&mut self) {
-        let has_selection = {
-            let vm = self.view_model.lock().expect("vm lock");
-            !vm.selected_paths().is_empty()
-        };
-        // The label is presentation; the command travels beside it so a translation can
-        // never change what a menu click does.
-        #[derive(Clone, Copy)]
-        enum Command {
-            Checksums,
-            Pattern,
-            Invert,
-            NewFile,
-            Clean,
+    /// Right-click / Shift+F10 over the selection: the native Windows menu carrying the
+    /// Shell's own verbs plus the Ferrix section (PRD 13.4: checksums; OPS-11 pattern;
+    /// OPS-13). When the native menu cannot be shown, the minimal Ferrix menu is shown
+    /// instead, with the same commands (spec §8.7).
+    ///
+    /// `row_id` is the row the pointer was over, when the click came from the list. A
+    /// row that is not part of the selection becomes the selection, which is the
+    /// Explorer rule; `None` means the keyboard route, where the selection stays as it
+    /// is.
+    pub fn on_context_menu(&mut self, row_id: Option<u64>) {
+        if let Some(id) = row_id {
+            let mut vm = self.view_model.lock().expect("vm lock");
+            if !vm.is_selected(id) {
+                vm.select_single(id);
+                drop(vm);
+                self.push_rows_to_window();
+                self.push_status_to_window();
+            }
         }
-        let items: Vec<(&str, Command)> = if has_selection {
-            vec![
-                (strings::ACTIVITY_CHECKSUMS, Command::Checksums),
-                (strings::MENU_SELECT_BY_PATTERN, Command::Pattern),
-                (strings::MENU_INVERT_SELECTION, Command::Invert),
-                (strings::MENU_NEW_FILE, Command::NewFile),
-                (strings::ACTIVITY_CLEAN, Command::Clean),
-            ]
-        } else {
-            vec![
-                (strings::MENU_SELECT_BY_PATTERN, Command::Pattern),
-                (strings::MENU_INVERT_SELECTION, Command::Invert),
-                (strings::MENU_NEW_FILE, Command::NewFile),
-                (strings::ACTIVITY_CLEAN, Command::Clean),
-            ]
+        let selection = {
+            let vm = self.view_model.lock().expect("vm lock");
+            vm.selected_paths()
         };
-        let labels: Vec<&str> = items.iter().map(|(label, _)| *label).collect();
+        let background = if selection.is_empty() {
+            self.local_folder()
+        } else {
+            None
+        };
         let hwnd = self.get_hwnd();
         let (x, y) = fx_shell::cursor_pos();
-        let chosen = match fx_shell::show_popup_menu(hwnd, x, y, &labels) {
-            Ok(Some(index)) => index,
-            _ => return,
-        };
-        match items.get(chosen).map(|(_, command)| *command) {
-            Some(Command::Checksums) => self.compute_checksums_for_selection(),
-            Some(Command::Pattern) => {
+
+        let result = crate::context_menu::show(
+            hwnd,
+            (x, y),
+            selection.clone(),
+            background,
+            &self.menu_extensions,
+        );
+        if result.used_fallback {
+            self.set_status(strings::STATUS_MENU_FALLBACK.to_string());
+        }
+        match result.choice {
+            crate::context_menu::MenuChoice::Ferrix(command) => self.run_ferrix_command(command),
+            crate::context_menu::MenuChoice::Shell { verb } => {
+                tracing::info!(target: "menu", verb, "shell verb executed");
+            }
+            crate::context_menu::MenuChoice::Blocked { verb } => {
+                tracing::warn!(target: "menu", verb, "extension blocked by the local list");
+                self.set_status(strings::STATUS_MENU_EXTENSION_BLOCKED.to_string());
+            }
+            crate::context_menu::MenuChoice::Dismissed => {}
+        }
+    }
+
+    /// Runs the command the user picked in the Ferrix section of the menu.
+    fn run_ferrix_command(&mut self, command: fx_shell::context_menu::FerrixCommand) {
+        match command {
+            fx_shell::context_menu::FerrixCommand::Checksums => {
+                self.compute_checksums_for_selection()
+            }
+            fx_shell::context_menu::FerrixCommand::SelectByPattern => {
                 if let Some(win) = self.window.upgrade() {
                     win.set_show_pattern_dialog(true);
                 }
             }
-            Some(Command::Invert) => self.on_invert_selection(),
-            Some(Command::NewFile) => self.on_create_file(),
-            Some(Command::Clean) => self.start_clean_scan(),
-            None => {}
+            fx_shell::context_menu::FerrixCommand::InvertSelection => self.on_invert_selection(),
+            fx_shell::context_menu::FerrixCommand::NewFile => self.on_create_file(),
+            fx_shell::context_menu::FerrixCommand::CleanEmptyFolders => self.start_clean_scan(),
+            fx_shell::context_menu::FerrixCommand::CopyPath => self.copy_selection(false),
+            fx_shell::context_menu::FerrixCommand::CopyName => self.copy_selection(true),
+        }
+    }
+
+    /// Copies the path (or the file name) of the selection to the clipboard.
+    fn copy_selection(&mut self, name_only: bool) {
+        let selection = {
+            let vm = self.view_model.lock().expect("vm lock");
+            vm.selected_paths()
+        };
+        if selection.is_empty() {
+            return;
+        }
+        let text = selection
+            .iter()
+            .map(|path| {
+                if name_only {
+                    path.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                } else {
+                    path.to_string_lossy().into_owned()
+                }
+            })
+            .collect::<Vec<String>>()
+            .join("\r\n");
+        match fx_shell::clipboard::write_text(&text) {
+            Ok(()) => {
+                tracing::info!(target: "menu", "selection copied to the clipboard");
+            }
+            Err(error) => {
+                tracing::warn!(target: "menu", %error, "could not write to the clipboard");
+                self.set_status(strings::STATUS_OPERATION_FAILED.to_string());
+            }
         }
     }
 
@@ -938,7 +997,7 @@ impl Orchestrator {
             ShortcutAction::NavigateForward => self.navigate_forward(),
             ShortcutAction::NavigateUp => self.navigate_up(),
             ShortcutAction::Refresh => self.refresh(),
-            ShortcutAction::ContextMenu => self.on_context_menu(),
+            ShortcutAction::ContextMenu => self.on_context_menu(None),
             // Properties / FocusAddressBar have no command path yet.
             _ => return false,
         }

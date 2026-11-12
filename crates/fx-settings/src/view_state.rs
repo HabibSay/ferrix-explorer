@@ -6,6 +6,10 @@
 //!   view_mode=Details
 //!   sort_col=Name
 //!   sort_dir=Ascending
+//!
+//! The same module holds the native-menu settings (blocklist and the global switch)
+//! required by the Tranche 3 design; they are persisted in their own file,
+//! menu_extensions.ini, because the file-level management UI is out of this tranche.
 
 use fx_domain::view::{Column, ColumnLayout, SortDirection, SortKey, ViewMode};
 use std::collections::HashMap;
@@ -207,6 +211,128 @@ fn view_state_path() -> io::Result<PathBuf> {
         .join("view_state.ini"))
 }
 
+// ── MenuExtensionState ─────────────────────────────────────────────────────────
+
+/// Local state of the native context menu: which extensions are blocked, and whether
+/// the native menu is used at all.
+///
+/// The file holds one line per extension identity (`GetCommandString` verb tokens and
+/// the CLSID/ProgID the Shell reports), so the user can turn a single extension off
+/// without losing the rest (spec §8.5), and one global switch for the whole native
+/// menu, the escape hatch for a machine without extensions (spec §8.7).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MenuExtensionState {
+    /// False when the native menu is never used; Ferrix then shows its own menu only.
+    pub native_menu_enabled: bool,
+    /// The extensions the user turned off, by identity.
+    pub blocked_extensions: Vec<String>,
+}
+
+impl Default for MenuExtensionState {
+    fn default() -> Self {
+        Self {
+            native_menu_enabled: true,
+            blocked_extensions: Vec::new(),
+        }
+    }
+}
+
+impl MenuExtensionState {
+    /// Loads the state from `%APPDATA%\FerrixExplorer\menu_extensions.ini`.
+    ///
+    /// A missing file yields the defaults: the native menu is on and nothing is blocked.
+    pub fn load() -> io::Result<Self> {
+        let path = menu_extensions_path()?;
+        let contents = match fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) => return Err(error),
+        };
+        Ok(parse_menu_extensions(&contents))
+    }
+
+    /// Persists the state, replacing any previous file.
+    pub fn save(&self) -> io::Result<()> {
+        let path = menu_extensions_path()?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::other("menu extensions path has no parent directory"))?;
+        fs::create_dir_all(parent)?;
+        fs::write(&path, format_menu_extensions(self))
+    }
+
+    /// Whether the given extension identity may run.
+    pub fn is_blocked(&self, identity: &str) -> bool {
+        self.blocked_extensions
+            .iter()
+            .any(|blocked| blocked.eq_ignore_ascii_case(identity))
+    }
+
+    /// Blocks an extension identity, keeping the others untouched.
+    pub fn block(&mut self, identity: &str) {
+        if !self.is_blocked(identity) {
+            self.blocked_extensions.push(identity.to_string());
+        }
+    }
+
+    /// Allows an extension identity again.
+    pub fn unblock(&mut self, identity: &str) {
+        self.blocked_extensions
+            .retain(|blocked| !blocked.eq_ignore_ascii_case(identity));
+    }
+}
+
+fn parse_menu_extensions(contents: &str) -> MenuExtensionState {
+    let mut state = MenuExtensionState::default();
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key.trim() {
+            "native_menu" => {
+                state.native_menu_enabled = matches!(value.trim(), "on" | "true" | "1");
+            }
+            "blocked" => {
+                let identity = value.trim();
+                if !identity.is_empty() {
+                    state.block(identity);
+                }
+            }
+            _ => {}
+        }
+    }
+    state
+}
+
+fn format_menu_extensions(state: &MenuExtensionState) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "native_menu={}\n",
+        if state.native_menu_enabled {
+            "on"
+        } else {
+            "off"
+        }
+    ));
+    for identity in &state.blocked_extensions {
+        out.push_str(&format!("blocked={identity}\n"));
+    }
+    out
+}
+
+fn menu_extensions_path() -> io::Result<PathBuf> {
+    let base_dirs = directories::BaseDirs::new()
+        .ok_or_else(|| io::Error::other("AppData could not be resolved"))?;
+    Ok(base_dirs
+        .config_dir()
+        .join("FerrixExplorer")
+        .join("menu_extensions.ini"))
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -287,5 +413,50 @@ mod tests {
         let map = parse_view_state(contents);
         let state = map.get(r"C:\test").expect("entry");
         assert!(matches!(state.view_mode, ViewMode::List));
+    }
+
+    #[test]
+    fn menu_extensions_default_to_the_native_menu_being_on() {
+        let state = MenuExtensionState::default();
+        assert!(state.native_menu_enabled);
+        assert!(state.blocked_extensions.is_empty());
+    }
+
+    #[test]
+    fn menu_extensions_round_trip_through_their_file_format() {
+        let mut state = MenuExtensionState::default();
+        state.block("7zip");
+        state.block("git");
+        let parsed = parse_menu_extensions(&format_menu_extensions(&state));
+        assert_eq!(parsed, state);
+        assert!(parsed.is_blocked("7Zip"));
+        assert!(parsed.is_blocked("git"));
+        assert!(!parsed.is_blocked("onedrive"));
+    }
+
+    #[test]
+    fn menu_extensions_can_be_switched_off_entirely() {
+        let parsed = parse_menu_extensions("native_menu=off\n");
+        assert!(!parsed.native_menu_enabled);
+        let parsed = parse_menu_extensions("native_menu=on\n");
+        assert!(parsed.native_menu_enabled);
+    }
+
+    #[test]
+    fn unblocking_an_extension_keeps_the_others_blocked() {
+        let mut state = MenuExtensionState::default();
+        state.block("7zip");
+        state.block("git");
+        state.unblock("7zip");
+        assert!(!state.is_blocked("7zip"));
+        assert!(state.is_blocked("git"));
+    }
+
+    #[test]
+    fn blocking_the_same_extension_twice_records_it_once() {
+        let mut state = MenuExtensionState::default();
+        state.block("7zip");
+        state.block("7zip");
+        assert_eq!(state.blocked_extensions.len(), 1);
     }
 }

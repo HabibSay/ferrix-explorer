@@ -6,6 +6,7 @@
 //! registry. All user-visible text is supplied by the caller.
 
 pub mod clipboard;
+pub mod context_menu;
 pub mod execute;
 pub mod file_time;
 pub mod icons;

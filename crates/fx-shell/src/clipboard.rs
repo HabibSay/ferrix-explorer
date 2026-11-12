@@ -17,7 +17,7 @@ use windows::{
                 RegisterClipboardFormatW, SetClipboardData,
             },
             Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
-            Ole::CF_HDROP,
+            Ole::{CF_HDROP, CF_UNICODETEXT},
         },
         UI::Shell::{DragQueryFileW, HDROP},
     },
@@ -300,4 +300,80 @@ pub fn clear_clipboard() -> windows::core::Result<()> {
         thread::sleep(Duration::from_millis(20));
     }
     Err(windows::core::Error::from_thread())
+}
+
+/// Writes `text` to the clipboard as CF_UNICODETEXT.
+///
+/// The text is stored NUL-terminated UTF-16, which is what the format expects.
+pub fn write_text(text: &str) -> windows::core::Result<()> {
+    let mut wide: Vec<u16> = text.encode_utf16().collect();
+    wide.push(0);
+    let byte_len = wide.len() * std::mem::size_of::<u16>();
+
+    // SAFETY: GlobalAlloc with GMEM_MOVEABLE and a positive size is always valid.
+    let h_global: HGLOBAL = unsafe { GlobalAlloc(GMEM_MOVEABLE, byte_len)? };
+    // SAFETY: We just allocated h_global; GlobalLock returns a writeable pointer.
+    let ptr = unsafe { GlobalLock(h_global) };
+    if ptr.is_null() {
+        // SAFETY: h_global is a valid HGLOBAL that we own; free it to avoid a leak.
+        unsafe {
+            let _ = GlobalFree(Some(h_global));
+        }
+        return Err(windows::core::Error::from_thread());
+    }
+    // SAFETY: ptr points at `byte_len` writable bytes; the copy stays within bounds.
+    unsafe {
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr as *mut u16, wide.len());
+    }
+    // SAFETY: h_global was successfully locked; unlocking it is always valid after a lock.
+    let _ = unsafe { GlobalUnlock(h_global) };
+
+    let mut opened = false;
+    for _ in 0..5 {
+        // SAFETY: None HWND is valid for a clipboard open with no window owner.
+        if unsafe { OpenClipboard(None) }.is_ok() {
+            opened = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    if !opened {
+        // SAFETY: h_global is a valid HGLOBAL that we still own (the clipboard was not
+        // opened, so nothing took ownership of the memory).
+        unsafe {
+            let _ = GlobalFree(Some(h_global));
+        }
+        return Err(windows::core::Error::from_thread());
+    }
+
+    // SAFETY: Clipboard is open on this thread.
+    let empty_result = unsafe { EmptyClipboard() };
+    if empty_result.is_err() {
+        // SAFETY: Clipboard is open; close it on error.
+        unsafe {
+            let _ = CloseClipboard();
+        }
+        // SAFETY: h_global is still owned by us (EmptyClipboard failed before
+        // SetClipboardData took ownership).
+        unsafe {
+            let _ = GlobalFree(Some(h_global));
+        }
+        return empty_result;
+    }
+
+    // SetClipboardData for CF_UNICODETEXT transfers ownership of h_global to Windows.
+    // After this call we MUST NOT free h_global.
+    // SAFETY: h_global contains a valid NUL-terminated UTF-16 block; clipboard is open.
+    let set_result = unsafe { SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(h_global.0))) };
+    if let Err(error) = set_result {
+        // SAFETY: Clipboard is open; close it before returning.
+        unsafe {
+            let _ = CloseClipboard();
+        }
+        return Err(error);
+    }
+    // h_global is now owned by Windows — do not free it.
+
+    // SAFETY: Clipboard is open; close after writing the format.
+    unsafe { CloseClipboard() }
 }
