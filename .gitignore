@@ -1,3 +1,6 @@
 /target/
 *.log
 .DS_Store
+
+# Agent scratch notes: never part of the product tree.
+.agents/
