@@ -19,6 +19,7 @@ pub mod plan;
 pub mod port;
 pub mod progress;
 pub mod rename;
+pub mod routing;
 pub mod transfer;
 pub mod undo;
 
@@ -26,4 +27,5 @@ pub use error::{ItemFailure, OperationError};
 pub use plan::{OperationPlan, PathPair, PlanItem, TransferKind, plan_transfer};
 pub use port::{PlatformOps, RecycledItem, VolumeKind};
 pub use progress::{OperationId, OperationKind, OperationState, OperationSummary, Progress};
+pub use routing::{ConflictScan, NativeCapability, TransferRoute, choose_route, scan_destination};
 pub use transfer::Transfer;
