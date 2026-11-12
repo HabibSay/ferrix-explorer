@@ -68,6 +68,29 @@ environment: with the redirect, **every** target passes.
 No new workspace dependency was added in slice 1: `fx-shell` still depends only on the `windows`
 crate, `fx-ops` only on `fx-domain` (spec §4).
 
+### Runner validation (2026-11-12)
+
+Branch `tranche-3-native-shell` pushed at `376ea56`; CI run **43227624974** (`windows-latest`,
+no third-party security layer), conclusion **success**, every step green: format, check, build,
+tests, clippy, `cargo deny`, `cargo audit`.
+
+| Target | Result on the runner |
+|---|---|
+| `fx-ops` lib | 79/79 (incl. the 13 `routing` tests) |
+| `fx-app` | 37/37 (incl. the 3 menu-registry tests) |
+| `fx-domain` | 53/53 |
+| `fx-fs` | 7/7 + listing 6/6 + longpath 3/3 |
+| `fx-ops` transfer | 22/22 |
+| `fx-settings` | 12/12 (incl. the 5 menu-settings tests) |
+| `fx-shell` | 10/10 + recycle_bin 3 ignored |
+| `fx-ui` | 13/13 + keyboard 3/3 |
+| `fx-a11y` | 1/1 |
+
+**0 failed.** The two binaries this workstation's security layer refuses to launch
+(`fx_settings-f9a0f9abeb347279.exe`, `recycle_bin-1c17dc6e52fb9a6a.exe`) both run here, and
+the 66 `%TEMP%` failures of the local baseline do not reproduce. The local-only failures are
+therefore environmental, not logical.
+
 ## Slice 0 â€” spike findings (spec section 12)
 
 Gate per spec: findings recorded here; decisions 1-8 confirmed or amended in an addendum to the
