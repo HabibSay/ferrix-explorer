@@ -114,6 +114,23 @@ impl Location {
             };
         }
 
+        // A drive on its own means its root: `C`, `C:` and `C:\` are the same place to a
+        // user and Windows' own address bar resolves them that way. The bare form is a
+        // relative path no Shell API accepts — measured on this host, the native menu fell
+        // back with ERROR_FILE_NOT_FOUND and the watcher refused the location.
+        let trimmed = input.trim();
+        let bare_drive = match trimmed.as_bytes() {
+            [letter] if letter.is_ascii_alphabetic() => Some(*letter),
+            [letter, b':'] if letter.is_ascii_alphabetic() => Some(*letter),
+            _ => None,
+        };
+        if let Some(letter) = bare_drive {
+            return Location::Local(PathBuf::from(format!(
+                "{}:\\",
+                (letter as char).to_ascii_uppercase()
+            )));
+        }
+
         // Absolute local: drive letter (C:\) or Unix-style root (/).
         if (input.len() >= 3
             && input.as_bytes()[1] == b':'
@@ -210,6 +227,24 @@ mod tests {
         let loc = Location::parse(r"C:\Users\alice");
         assert_eq!(loc, Location::Local(PathBuf::from(r"C:\Users\alice")));
         assert_eq!(loc.kind(), LocationKind::Local);
+    }
+
+    /// A drive typed on its own opens that drive, which is what the address bar is asked
+    /// for far more often than a relative folder called "C".
+    #[test]
+    fn parse_bare_drive_opens_its_root() {
+        for input in ["C", "c", "C:", " C "] {
+            assert_eq!(
+                Location::parse(input),
+                Location::Local(PathBuf::from(r"C:\")),
+                "input {input:?}"
+            );
+        }
+        assert_eq!(
+            Location::parse(r"C:\Users"),
+            Location::Local(PathBuf::from(r"C:\Users")),
+            "a full path is untouched"
+        );
     }
 
     #[test]
