@@ -16,6 +16,7 @@ pub mod properties;
 pub mod recycle;
 pub mod recycle_quota;
 pub mod symlink;
+pub mod thumbnails;
 pub mod volume;
 
 pub use drop_source::{
@@ -26,6 +27,10 @@ pub use drop_target::{
     DragEffect, DragPayload, DropModifiers, DropOutcome, DropSink, OleDropRegistration,
 };
 pub use properties::{PropertiesError, PropertiesMode, open_with, show_properties};
+pub use thumbnails::{
+    DiskCache, FetchedThumbnail, RgbaImage, ThumbnailKey, fetch_from_shell, fetch_thumbnail,
+    fetch_thumbnail_into,
+};
 
 use windows::{
     Win32::{

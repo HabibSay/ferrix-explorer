@@ -26,6 +26,8 @@ fn window_with_row() -> (ApplicationWindow, Seen) {
         attributes_text: SharedString::default(),
         selected: false,
         icon_key: 0,
+        thumbnail: slint::Image::default(),
+        has_thumbnail: false,
     };
     window.set_rows(ModelRc::new(VecModel::from(vec![row])));
     let seen: Seen = Rc::new(RefCell::new(Vec::new()));

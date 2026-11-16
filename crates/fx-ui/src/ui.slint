@@ -15,6 +15,10 @@ struct FileRow {
     attributes-text: string,
     selected: bool,
     icon-key: int,
+    // Tranche 3 slice 4: the Shell's picture for this row, and whether there is one.
+    // A row without a thumbnail renders exactly as it did before the slice.
+    thumbnail: image,
+    has-thumbnail: bool,
 }
 
 // Represents a column in the details header.
@@ -95,8 +99,18 @@ component FileListItem inherits Rectangle {
     }
 
     HorizontalLayout {
-        spacing: 0px;
+        spacing: 4px;
         padding-left: 4px;
+        // The thumbnail asks for the Shell's picture; a miss leaves the row text-only.
+        if root.entry.has-thumbnail: Image {
+            source: root.entry.thumbnail;
+            width: root.item-height - 4px;
+            height: root.item-height - 4px;
+            image-fit: contain;
+            // Decoration, not a control: the row's own accessible label already names the
+            // entry, and announcing the picture twice would only add noise for Narrator.
+            accessible-role: none;
+        }
         Text {
             text: root.entry.display-name;
             color: root.entry.selected ? #ffffff : #000000;

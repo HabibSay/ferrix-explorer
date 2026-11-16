@@ -73,6 +73,12 @@ pub struct Orchestrator {
     clean_ui_tx: Option<tokio::sync::mpsc::UnboundedSender<bool>>,
     /// Moved into the dispatch task by `spawn_event_dispatch`.
     clean_ui_rx: Option<tokio::sync::mpsc::UnboundedReceiver<bool>>,
+    /// Tranche 3 slice 4: thumbnail fetches, bounded and off the UI thread.
+    thumbnails: Option<crate::thumbnails::ThumbnailLoader>,
+    /// Sends finished thumbnails to the dispatch task.
+    thumbnail_tx: tokio::sync::mpsc::UnboundedSender<crate::thumbnails::FetchedThumbnail>,
+    /// Moved into the dispatch task by `spawn_thumbnail_dispatch`.
+    thumbnail_rx: Option<tokio::sync::mpsc::UnboundedReceiver<crate::thumbnails::FetchedThumbnail>>,
     /// Activity rows, shared with the dispatch task (cap 50, PRD 13.4).
     activity: Arc<Mutex<crate::activity::ActivityStore>>,
     /// Folder the last submitted command modifies; the dispatcher refreshes it on
@@ -137,6 +143,16 @@ impl Orchestrator {
         let (conflict_ui_tx, conflict_ui_rx) =
             tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
         let (clean_ui_tx, clean_ui_rx) = tokio::sync::mpsc::unbounded_channel::<bool>();
+        let (thumbnail_tx, thumbnail_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::thumbnails::FetchedThumbnail>();
+        let thumbnails = crate::thumbnails::ThumbnailLoader::new();
+        match &thumbnails {
+            Some(loader) => tracing::info!(
+                root = %loader.cache_root().display(),
+                "thumbnail cache"
+            ),
+            None => tracing::warn!("no LOCALAPPDATA; thumbnails are disabled"),
+        }
 
         let mut orch = Orchestrator {
             view_model: Arc::new(Mutex::new(FileListViewModel::new())),
@@ -157,6 +173,9 @@ impl Orchestrator {
             conflict_ui_rx: Some(conflict_ui_rx),
             clean_ui_tx: Some(clean_ui_tx),
             clean_ui_rx: Some(clean_ui_rx),
+            thumbnails,
+            thumbnail_tx,
+            thumbnail_rx: Some(thumbnail_rx),
             activity: Arc::new(Mutex::new(crate::activity::ActivityStore::new())),
             refresh_target: Arc::new(Mutex::new(None)),
             drop_context,
@@ -1477,10 +1496,12 @@ impl Orchestrator {
 
     /// Push the current row list from the view model to the Slint window.
     fn push_rows_to_window(&self) {
-        let (rows, drop_rows) = {
+        let (ui_rows, drop_rows) = {
             let vm = self.view_model.lock().expect("view model lock");
-            let rows: Vec<fx_ui::FileRow> =
-                vm.to_ui_rows().into_iter().map(ui_row_to_slint).collect();
+            // The view-model rows, not the Slint rows: a Slint texture is not `Send`, and
+            // this list crosses to the event loop. The conversion happens below, inside
+            // the closure, on the thread that may create textures.
+            let ui_rows = vm.to_ui_rows();
             // Tranche 3 slice 2: the same rows, in the same order, for the OLE drop
             // hit-test. Published here so the shell never has to ask the view model from
             // inside its own drag loop.
@@ -1489,14 +1510,15 @@ impl Orchestrator {
                 .into_iter()
                 .map(|(id, path, is_dir)| crate::drag_drop::ListRow { id, path, is_dir })
                 .collect();
-            (rows, drop_rows)
+            (ui_rows, drop_rows)
         };
-        let count = rows.len();
+        let count = ui_rows.len();
         let background = self.local_folder();
         publish_drop_rows(&self.drop_context, drop_rows, background);
         let window_weak = self.window.clone();
         invoke_from_event_loop(move || {
             if let Some(win) = window_weak.upgrade() {
+                let rows: Vec<fx_ui::FileRow> = ui_rows.into_iter().map(ui_row_to_slint).collect();
                 win.set_rows(ModelRc::new(VecModel::from(rows)));
                 win.set_status_item_count(SharedString::from(format!(
                     "{count} {}",
@@ -1505,6 +1527,129 @@ impl Orchestrator {
             }
         })
         .ok();
+        // The rows changed, so the list may now want thumbnails it did not want before.
+        self.pump_thumbnails();
+    }
+
+    // ── Tranche 3 slice 4: thumbnails ──────────────────────────────────────
+
+    /// Moves the thumbnail receiver into its own task.
+    ///
+    /// Results are applied on the Slint thread and never on the blocking pool: the view
+    /// model is only mutated from the event loop, and repainting one row must happen there
+    /// too.
+    pub fn spawn_thumbnail_dispatch(orch: Arc<Mutex<Orchestrator>>) {
+        let (runtime, rx) = {
+            let mut guard = orch.lock().expect("orchestrator");
+            (
+                guard.runtime.handle().clone(),
+                guard
+                    .thumbnail_rx
+                    .take()
+                    .expect("thumbnail dispatch already started"),
+            )
+        };
+        let mut rx = rx;
+        runtime.spawn(async move {
+            while let Some(result) = rx.recv().await {
+                let orch = Arc::clone(&orch);
+                let applied = slint::invoke_from_event_loop(move || {
+                    orch.lock()
+                        .expect("orchestrator")
+                        .apply_thumbnail_result(result);
+                });
+                if applied.is_err() {
+                    // The window is gone; nothing left to paint.
+                    break;
+                }
+            }
+        });
+    }
+
+    /// Schedules the next thumbnails the list still needs.
+    ///
+    /// Called whenever the rendered rows change, so a new folder, a scroll or a filter
+    /// starts filling in. Rows are asked for once per listing generation: a Shell handler
+    /// that keeps failing is not retried in a loop.
+    fn pump_thumbnails(&self) {
+        let Some(loader) = self.thumbnails.as_ref() else {
+            return;
+        };
+        let runtime = self.runtime.handle().clone();
+        let sender = self.thumbnail_tx.clone();
+        let mut sent = 0_usize;
+        loop {
+            let request = self
+                .view_model
+                .lock()
+                .expect("view model lock")
+                .next_thumbnail_request(crate::thumbnails::THUMBNAIL_SIZE);
+            let Some(request) = request else { break };
+            loader.request(&runtime, request, sender.clone());
+            sent += 1;
+            // One pump only starts a handful; the next result pumps again, so a long list
+            // fills in progressively instead of queueing hundreds of Shell calls at once.
+            if sent >= crate::thumbnails::MAX_CONCURRENT_FETCHES {
+                break;
+            }
+        }
+    }
+
+    /// Applies one finished fetch: stores the image and repaints only its row.
+    ///
+    /// Runs on the Slint thread. The generation guard inside the view model decides whether
+    /// the result still belongs to the list the user is looking at.
+    fn apply_thumbnail_result(&mut self, result: crate::thumbnails::FetchedThumbnail) {
+        let Some(image) = result.image else {
+            // A row with no picture keeps the row it already has. Another fetch is started
+            // so a single miss does not stall the rest of the list.
+            self.pump_thumbnails();
+            return;
+        };
+        let pixels = std::sync::Arc::new(fx_ui::viewmodel::ThumbnailPixels {
+            width: image.width,
+            height: image.height,
+            pixels: image.pixels,
+        });
+        let applied = self
+            .view_model
+            .lock()
+            .expect("view model lock")
+            .apply_thumbnail(result.generation, result.entry_id, pixels);
+        if !applied {
+            tracing::debug!(
+                entry = result.entry_id,
+                generation = result.generation,
+                "thumbnail discarded as stale"
+            );
+            return;
+        }
+        // The gate asks for the cache hit to be visible in the log, so it is reported at
+        // info level: one line per picture, on the second visit only.
+        tracing::info!(
+            entry = result.entry_id,
+            from_cache = result.from_cache,
+            "thumbnail applied"
+        );
+        self.repaint_row(result.entry_id);
+        self.pump_thumbnails();
+    }
+
+    /// Replaces one row in the published model, without rebuilding the listing.
+    fn repaint_row(&self, entry_id: u64) {
+        let (index, row) = {
+            let vm = self.view_model.lock().expect("view model lock");
+            // One row, not the listing: see `ui_row_by_id` (rule 4).
+            let Some(found) = vm.ui_row_by_id(entry_id) else {
+                return;
+            };
+            found
+        };
+        let row = ui_row_to_slint(row);
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        slint::Model::set_row_data(&window.get_rows(), index, row);
     }
 
     /// Push enriched status bar data (selected count, selected bytes) to the window.
@@ -1776,6 +1921,16 @@ fn finish_refresh(orch: &Arc<Mutex<Orchestrator>>) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// Turns a row's decoded pixels into a Slint texture.
+///
+/// This runs on the Slint thread, which is the only place a texture may be created.
+fn thumbnail_to_slint_image(pixels: &fx_ui::viewmodel::ThumbnailPixels) -> slint::Image {
+    let mut buffer =
+        slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(pixels.width, pixels.height);
+    buffer.make_mut_bytes().copy_from_slice(&pixels.pixels);
+    slint::Image::from_rgba8(buffer)
+}
+
 fn ui_row_to_slint(row: fx_ui::viewmodel::UiFileRow) -> fx_ui::FileRow {
     fx_ui::FileRow {
         id: row.id as i32,
@@ -1788,6 +1943,12 @@ fn ui_row_to_slint(row: fx_ui::viewmodel::UiFileRow) -> fx_ui::FileRow {
         attributes_text: SharedString::default(),
         selected: row.selected,
         icon_key: row.icon_key as i32,
+        has_thumbnail: row.thumbnail.is_some(),
+        thumbnail: row
+            .thumbnail
+            .as_deref()
+            .map(thumbnail_to_slint_image)
+            .unwrap_or_default(),
     }
 }
 

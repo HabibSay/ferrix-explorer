@@ -8,7 +8,8 @@ use fx_domain::{
     filter::{FilterQuery, VisibilityRules},
     view::{Column, ColumnLayout, SortDirection, SortKey, ViewMode},
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 /// Représentation plate d'une entrée pour l'UI Slint.
 #[derive(Clone, Debug)]
@@ -24,6 +25,67 @@ pub struct UiFileRow {
     pub type_text: String,
     pub selected: bool,
     pub icon_key: u64,
+    /// The row's thumbnail, when one has arrived (Tranche 3 slice 4).
+    ///
+    /// `None` is the normal state while a row is still being fetched and after a miss; the
+    /// row then renders without an image, exactly as it did before this slice.
+    pub thumbnail: Option<std::sync::Arc<ThumbnailPixels>>,
+}
+
+/// Decoded pixels for one row's thumbnail.
+///
+/// Deliberately not a `slint::Image`: this type travels between the blocking pool and the
+/// UI thread, and a Slint texture is not `Send`. The conversion happens on the Slint thread,
+/// in [`crate::`]-level UI code, where a texture may legitimately be created.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThumbnailPixels {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// `width * height * 4` bytes of RGBA, rows top-down.
+    pub pixels: Vec<u8>,
+}
+
+/// Extensions Ferrix asks the Shell for a thumbnail of (Tranche 3 slice 4).
+///
+/// The Shell answers for anything, but a listing of sources, text and archives would spend
+/// the fetch budget on images that do not exist. The list is a filter on *requests*, not a
+/// claim about what the Shell can produce: a type that is missing here simply keeps its
+/// icon until the list grows.
+const THUMBNAIL_EXTENSIONS: &[&str] = &[
+    "avif", "bmp", "gif", "heic", "ico", "jfif", "jpeg", "jpg", "png", "svg", "tif", "tiff",
+    "webp", "mp4", "mov", "m4v", "wmv", "avi", "mkv",
+];
+
+/// Whether a row is worth asking the Shell for a thumbnail.
+///
+/// Pure, so the request filter is tested without a Shell or a window: the extension is
+/// compared case-insensitively and a file with no extension is never a candidate.
+pub fn is_thumbnail_candidate(path: &Path) -> bool {
+    let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    THUMBNAIL_EXTENSIONS
+        .iter()
+        .any(|known| extension.eq_ignore_ascii_case(known))
+}
+
+/// One thumbnail the view model is waiting for (Tranche 3 slice 4).
+///
+/// The generation travels with the request and comes back with the result: a result that
+/// arrives after a navigation belongs to a listing that is gone, and applying it would put
+/// one folder's picture on another folder's row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThumbnailRequest {
+    /// The row the thumbnail belongs to.
+    pub entry_id: u64,
+    /// The listing generation at request time.
+    pub generation: u32,
+    /// The file to fetch.
+    pub path: std::path::PathBuf,
+    /// Requested edge length in pixels.
+    pub size: u32,
 }
 
 /// L'état complet du view model, manipulé uniquement depuis l'event loop.
@@ -45,6 +107,15 @@ pub struct FileListViewModel {
     _view_mode: ViewMode,
     /// Entry currently being renamed inline (`None` = none).
     rename_target: Option<u64>,
+    /// Bumped on every navigation, so a late thumbnail result can be recognised as stale.
+    thumbnail_generation: u32,
+    /// The thumbnails that have arrived, by entry id.
+    thumbnails: HashMap<u64, std::sync::Arc<ThumbnailPixels>>,
+    /// Rows a thumbnail has already been asked for in this generation.
+    ///
+    /// A row is asked for once: a miss is not retried in a loop, because a failing Shell
+    /// handler would otherwise be called again on every pump.
+    thumbnails_requested: HashSet<u64>,
 }
 
 impl FileListViewModel {
@@ -59,7 +130,82 @@ impl FileListViewModel {
             column_layout: ColumnLayout::default(),
             _view_mode: ViewMode::default(),
             rename_target: None,
+            thumbnail_generation: 0,
+            thumbnails: HashMap::new(),
+            thumbnails_requested: HashSet::new(),
         }
+    }
+
+    /// The current listing generation (Tranche 3 slice 4).
+    pub fn thumbnail_generation(&self) -> u32 {
+        self.thumbnail_generation
+    }
+
+    /// The next thumbnail worth fetching, or `None` when every candidate already has one.
+    ///
+    /// Only visible rows are considered: a row the user cannot see is not worth a Shell
+    /// call, and when the user scrolls to it the next turn picks it up. Folders are never
+    /// candidates — their picture is the folder icon, not a preview.
+    pub fn next_thumbnail_request(&mut self, size: u32) -> Option<ThumbnailRequest> {
+        let generation = self.thumbnail_generation;
+        let requested = &self.thumbnails_requested;
+        let thumbnails = &self.thumbnails;
+        let entry = self.visible_entries.iter().find(|entry| {
+            !matches!(entry.kind, EntryKind::Directory)
+                && !thumbnails.contains_key(&entry.id.0)
+                && !requested.contains(&entry.id.0)
+                && is_thumbnail_candidate(&entry.path)
+        })?;
+        let request = ThumbnailRequest {
+            entry_id: entry.id.0,
+            generation,
+            path: entry.path.clone(),
+            size,
+        };
+        self.thumbnails_requested.insert(request.entry_id);
+        Some(request)
+    }
+
+    /// Applies a fetched thumbnail, or refuses it as stale.
+    ///
+    /// Two guards, because a thumbnail can be late in two different ways: the generation
+    /// catches a result that outlived a navigation, and the visibility check catches one for
+    /// a row that a filter or a sort pushed out of the list while it was in flight.
+    ///
+    /// Returns `true` when the image was stored and the row must be repainted.
+    pub fn apply_thumbnail(
+        &mut self,
+        generation: u32,
+        entry_id: u64,
+        image: std::sync::Arc<ThumbnailPixels>,
+    ) -> bool {
+        if generation != self.thumbnail_generation {
+            return false;
+        }
+        if !self
+            .visible_entries
+            .iter()
+            .any(|entry| entry.id.0 == entry_id)
+        {
+            return false;
+        }
+        self.thumbnails.insert(entry_id, image);
+        true
+    }
+
+    /// The thumbnail for `entry_id`, when one has arrived.
+    pub fn thumbnail(&self, entry_id: u64) -> Option<std::sync::Arc<ThumbnailPixels>> {
+        self.thumbnails.get(&entry_id).cloned()
+    }
+
+    /// Where `entry_id` sits in the rendered list, or `None` when it is not rendered.
+    ///
+    /// The application uses this to update one row instead of republishing the listing:
+    /// a thumbnail that arrived must not cost a full model rebuild on a large folder.
+    pub fn visible_index(&self, entry_id: u64) -> Option<usize> {
+        self.visible_entries
+            .iter()
+            .position(|entry| entry.id.0 == entry_id)
     }
 
     /// Ajoute un batch d'entrées reçu du listing (streaming).
@@ -69,10 +215,16 @@ impl FileListViewModel {
     }
 
     /// Réinitialise pour une nouvelle navigation.
+    ///
+    /// The thumbnail generation moves on here, so every in-flight fetch from the folder the
+    /// user just left is discarded when it lands (Tranche 3 slice 4).
     pub fn clear(&mut self) {
         self.all_entries.clear();
         self.visible_entries.clear();
         self.selected_ids.clear();
+        self.thumbnails.clear();
+        self.thumbnails_requested.clear();
+        self.thumbnail_generation = self.thumbnail_generation.wrapping_add(1);
     }
 
     /// Applique filtre + visibilité + tri pour reconstruire `visible_entries`.
@@ -142,18 +294,39 @@ impl FileListViewModel {
     pub fn to_ui_rows(&self) -> Vec<UiFileRow> {
         self.visible_entries
             .iter()
-            .map(|e| UiFileRow {
-                id: e.id.0,
-                display_name: e.display_name.clone(),
-                kind: format_kind(&e.kind).to_string(),
-                is_folder: matches!(e.kind, EntryKind::Directory),
-                size_text: format_size(e.size),
-                modified_text: format_modified(e.modified),
-                type_text: format_kind(&e.kind).to_string(),
-                selected: self.selected_ids.contains(&e.id.0),
-                icon_key: e.icon_key,
-            })
+            .map(|e| self.ui_row(e))
             .collect()
+    }
+
+    /// Une entrée, mise en forme comme dans `to_ui_rows`.
+    ///
+    /// One definition of a rendered row, so the single-row path cannot drift from the
+    /// listing path.
+    fn ui_row(&self, e: &FileEntry) -> UiFileRow {
+        UiFileRow {
+            id: e.id.0,
+            display_name: e.display_name.clone(),
+            kind: format_kind(&e.kind).to_string(),
+            is_folder: matches!(e.kind, EntryKind::Directory),
+            size_text: format_size(e.size),
+            modified_text: format_modified(e.modified),
+            type_text: format_kind(&e.kind).to_string(),
+            selected: self.selected_ids.contains(&e.id.0),
+            icon_key: e.icon_key,
+            thumbnail: self.thumbnails.get(&e.id.0).cloned(),
+        }
+    }
+
+    /// The rendered row for `entry_id` and its index, without building the whole list.
+    ///
+    /// A thumbnail arriving repaints exactly one row; materialising every row of a large
+    /// folder for that would put a listing-sized allocation pass on the UI thread once per
+    /// picture, which rule 4 does not allow. Returns `None` when the entry is not rendered
+    /// (filtered out, or from another listing).
+    pub fn ui_row_by_id(&self, entry_id: u64) -> Option<(usize, UiFileRow)> {
+        let index = self.visible_index(entry_id)?;
+        let entry = self.visible_entries.get(index)?;
+        Some((index, self.ui_row(entry)))
     }
 
     /// Rows in view order with what the OLE drop target needs (Tranche 3 slice 2):
@@ -455,6 +628,140 @@ mod tests {
             attributes: FileAttributes::default(),
             icon_key: 0,
         }
+    }
+
+    /// A 1x1 red pixel, the smallest thing a row can be given as a thumbnail.
+    fn sample_pixels() -> std::sync::Arc<ThumbnailPixels> {
+        std::sync::Arc::new(ThumbnailPixels {
+            width: 1,
+            height: 1,
+            pixels: vec![255, 0, 0, 255],
+        })
+    }
+
+    /// A picture and a folder, the two shapes the thumbnail request filter has to tell apart.
+    fn sample_listing() -> FileListViewModel {
+        let mut vm = FileListViewModel::new();
+        vm.append_batch(vec![
+            make_entry(1, "photo.JPG", EntryKind::File),
+            make_entry(2, "notes.txt", EntryKind::File),
+            make_entry(3, "albums", EntryKind::Directory),
+        ]);
+        vm
+    }
+
+    /// Only image-like files are worth a Shell call: an extension match is case-insensitive,
+    /// a folder name that looks like a picture is not a file, and no extension never matches.
+    #[test]
+    fn only_image_like_files_are_thumbnail_candidates() {
+        assert!(is_thumbnail_candidate(Path::new(r"C:\pictures\a.JPG")));
+        assert!(is_thumbnail_candidate(Path::new(r"C:\pictures\a.png")));
+        assert!(is_thumbnail_candidate(Path::new(r"C:\clips\a.mp4")));
+        assert!(!is_thumbnail_candidate(Path::new(r"C:\docs\a.txt")));
+        assert!(!is_thumbnail_candidate(Path::new(r"C:\docs\README")));
+    }
+
+    /// The first request is the first visible image, folders and plain files skipped.
+    #[test]
+    fn the_next_request_picks_the_first_image_like_file() {
+        let mut vm = sample_listing();
+        let request = vm.next_thumbnail_request(64).expect("a candidate exists");
+        assert_eq!(request.entry_id, 1);
+        assert_eq!(request.size, 64);
+        assert_eq!(request.generation, vm.thumbnail_generation());
+        assert!(request.path.ends_with("photo.JPG"));
+    }
+
+    /// Once a row has its picture it is not requested again, and a listing with no images
+    /// asks for nothing at all.
+    #[test]
+    fn a_filled_slot_is_not_requested_again() {
+        let mut vm = sample_listing();
+        let request = vm.next_thumbnail_request(64).expect("a candidate exists");
+        assert!(vm.apply_thumbnail(request.generation, request.entry_id, sample_pixels()));
+        assert!(vm.next_thumbnail_request(64).is_none());
+        assert!(
+            vm.visible_index(1).is_some(),
+            "the row is in the rendered list"
+        );
+        assert!(vm.visible_index(42).is_none());
+    }
+
+    /// A result from the folder the user left is discarded: it must not paint one folder's
+    /// picture onto another folder's row.
+    #[test]
+    fn a_result_from_a_previous_listing_is_discarded() {
+        let mut vm = sample_listing();
+        let stale = vm.next_thumbnail_request(64).expect("a candidate exists");
+
+        vm.clear();
+        vm.append_batch(vec![make_entry(7, "other.jpg", EntryKind::File)]);
+
+        assert!(
+            !vm.apply_thumbnail(stale.generation, 7, sample_pixels()),
+            "a result carrying the old generation must be refused"
+        );
+        assert!(vm.to_ui_rows()[0].thumbnail.is_none());
+    }
+
+    /// A slot that is no longer visible is refused too: a filter that hid the row while its
+    /// thumbnail was in flight must not resurrect it.
+    #[test]
+    fn a_result_for_a_row_that_left_the_list_is_discarded() {
+        let mut vm = sample_listing();
+        let request = vm.next_thumbnail_request(64).expect("a candidate exists");
+        let request_id = request.entry_id;
+        let request_generation = request.generation;
+        vm.set_filter("no-such-name".to_string());
+
+        assert!(!vm.apply_thumbnail(request_generation, request_id, sample_pixels()));
+        assert!(vm.thumbnail(1).is_none());
+    }
+
+    /// A single repainted row is the row the full listing would build for it: the thumbnail
+    /// path must not carry a second, drifting definition of a row.
+    #[test]
+    fn the_single_row_helper_matches_the_full_list() {
+        let mut vm = sample_listing();
+        let request = vm.next_thumbnail_request(64).expect("a candidate exists");
+        assert!(vm.apply_thumbnail(request.generation, request.entry_id, sample_pixels()));
+
+        let rows = vm.to_ui_rows();
+        let (index, row) = vm
+            .ui_row_by_id(request.entry_id)
+            .expect("the row is rendered");
+        assert_eq!(row.id, rows[index].id);
+        assert_eq!(row.display_name, rows[index].display_name);
+        assert_eq!(row.kind, rows[index].kind);
+        assert_eq!(row.size_text, rows[index].size_text);
+        assert_eq!(row.modified_text, rows[index].modified_text);
+        assert_eq!(row.selected, rows[index].selected);
+        assert!(
+            row.thumbnail.is_some(),
+            "the helper must carry the thumbnail"
+        );
+        assert!(vm.ui_row_by_id(42).is_none(), "an absent entry has no row");
+    }
+
+    /// An applied thumbnail reaches the rows the UI renders, and only its own row.
+    #[test]
+    fn an_applied_thumbnail_reaches_the_rendered_row() {
+        let mut vm = sample_listing();
+        let request = vm.next_thumbnail_request(64).expect("a candidate exists");
+        assert!(vm.apply_thumbnail(request.generation, request.entry_id, sample_pixels()));
+
+        let rows = vm.to_ui_rows();
+        let row = rows
+            .iter()
+            .find(|row| row.id == request.entry_id)
+            .expect("the requested row is rendered");
+        assert!(row.thumbnail.is_some());
+        assert!(
+            rows.iter()
+                .filter(|row| row.id != request.entry_id)
+                .all(|row| row.thumbnail.is_none()),
+            "no other row may inherit the image"
+        );
     }
 
     #[test]

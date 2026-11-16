@@ -543,10 +543,10 @@ fn wide_null(path: &Path) -> Vec<u16> {
 
 /// STA guard for the shortcut writer: PRD 10.5 requires explicit initialization on
 /// non-UI threads, and `CoCreateInstance` fails outright without it.
-struct Apartment;
+pub(crate) struct Apartment;
 
 impl Apartment {
-    fn new() -> windows::core::Result<Self> {
+    pub(crate) fn new() -> windows::core::Result<Self> {
         // SAFETY: one COM initialization for this thread, paired with exactly one
         // CoUninitialize in `Drop`; the guard never leaves the calling thread.
         let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };

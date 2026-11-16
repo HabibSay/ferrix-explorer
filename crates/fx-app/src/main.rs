@@ -18,6 +18,7 @@ mod orchestration;
 mod platform_ops;
 mod properties;
 mod shortcuts;
+mod thumbnails;
 
 use std::sync::{Arc, Mutex};
 
@@ -342,6 +343,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // shell's modal drag loop, so the work is handed to a task of its own rather
     // than taken on the orchestrator's lock there (rule 4).
     Orchestrator::spawn_drop_dispatch(orch.clone(), drop_rx);
+
+    // Tranche 3 slice 4: thumbnails arrive on the blocking pool and are applied here.
+    Orchestrator::spawn_thumbnail_dispatch(orch.clone());
 
     // The window can move to a monitor with another scale factor, and the list
     // geometry does not change when it does — yet the shell hands the drop point in
