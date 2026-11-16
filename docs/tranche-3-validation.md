@@ -114,12 +114,52 @@ The following was repaired before the gates below were observed.
 | `cargo audit` | **PASS** (exit 0; 8 pre-existing allowed warnings, 0 vulnerabilities) |
 | `cargo test --workspace --all-targets --no-fail-fast` | **PASS** with `TEMP`/`TMP` at `target\tmp`: `fx-shell` lib 14/14, `fx-app` 56/56, `fx-domain` 53/53, `fx-ops` lib 85/85 + transfer 22/22, `fx-fs` 7/7 + listing 6/6 + longpath 3/3, `fx-settings` 12/12, `fx-ui` 13/13 + keyboard 3/3, `fx-a11y` 1/1; `fx-shell` recycle_bin 3 ignored manual rows. Two targets (`fx-settings --lib`, `fx-ui --test keyboard`) had to be re-run alone: their first launch was refused with `Acces refuse. (os error 5)`, the known security-layer behaviour, and both pass on the retry |
 
-**Slice coverage after this check.** Slices 0, 1 and 2 have code. Slices **3, 4 and 5 have no code
-at all**: there is no `fx-shell/src/properties.rs` or `fx-app/src/properties.rs` (slice 3), no
-`thumbnails.rs` and no view-model thumbnail slots (slice 4), and no `file_operation.rs`, native
-runner or `crates/fx-app/tests/native_conformance.rs` (slice 5). The tranche is therefore **not
-complete** and does not meet slice 5's sign-off gate (spec section 13); the rows below that belong
-to slices 3-5 stay NOT RUN for want of code, not for want of a desktop session.
+**Slice coverage after the slice-2 check.** Slices 0, 1 and 2 had code at that point; slices 3, 4
+and 5 had none. Slices 3 and 4 have since been implemented — see the section below — and slice 5
+is still absent.
+
+### Slices 3 and 4 gates, re-checked (2026-11-16)
+
+Slice 3 (native properties and Open with) is committed at `a54700a`. Slice 4 (thumbnails) was
+present but uncommitted in the working tree and is committed in this pass. Both were gated on this
+host with `TEMP`/`TMP` at `target\tmp`.
+
+**Two defects in slice 4 repaired before the gates below were observed:**
+
+| Repair | File |
+|---|---|
+| Three rustfmt deviations in the new code (`cargo fmt --check` exited 1) — applied, not suppressed | `crates/fx-ui/src/viewmodel.rs` |
+| `repaint_row` rebuilt the whole listing to repaint one row (`vm.to_ui_rows()` then `find`), so a thumbnail arriving in a 100 000-entry folder cost a listing-sized allocation pass on the UI thread per picture — the opposite of its own comment and of rule 4. The view model now exposes `ui_row_by_id`, one definition of a rendered row shared with `to_ui_rows`; `the_single_row_helper_matches_the_full_list` asserts the two paths agree | `crates/fx-ui/src/viewmodel.rs`, `crates/fx-app/src/orchestration.rs` |
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --all -- --check` | **PASS** (exit 0) after the repair |
+| `cargo check --workspace --all-targets` | **PASS** (exit 0) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | **PASS** (exit 0), no suppressions, no `#[allow]` added |
+| `cargo deny --offline check` | **PASS** (advisories ok, bans ok, licenses ok, sources ok); offline against the cached DB, as in the slice-2 pass — no dependency was added, so no license review was triggered (spec §3) |
+| `cargo audit` | **PASS** (exit 0; the same 8 pre-existing allowed warnings, 0 vulnerabilities) |
+| `cargo test --workspace --all-targets --no-fail-fast` | **PASS** except one target: `fx-settings --lib` was refused launch (`target\debug\deps\fx_settings-f9a0f9abeb347279.exe`, the hash the slice-0 pass already recorded) and passes **12/12** on retry — the known security-layer behaviour, not a logic failure |
+
+| Target | Result |
+|---|---|
+| `fx-shell` lib | 25/25 (incl. the 11 new thumbnail cache tests) + recycle_bin 3 ignored |
+| `fx-ui` lib | **20/20** (incl. the 6 new thumbnail-slot tests and the single-row test) + keyboard 3/3 |
+| `fx-app` | 60/60 (incl. the 2 thumbnail-loader tests) |
+| `fx-ops` lib | 85/85 + transfer 22/22 |
+| `fx-domain` | 53/53 |
+| `fx-fs` | 7/7 + listing 6/6 + longpath 3/3 |
+| `fx-settings` | 12/12 (retry, see above) |
+| `fx-a11y` | 1/1 |
+
+**Slice coverage after this pass.** Slices 0-4 have code and are committed. **Slice 5 has no code
+at all**: there is no `crates/fx-shell/src/file_operation.rs`, no native runner in
+`crates/fx-app/src/operations.rs`, and no `crates/fx-app/tests/native_conformance.rs`. The tranche
+therefore **does not meet slice 5's sign-off gate** (spec section 13): OPS-08 — `IFileOperation`
+with the native progress dialog, the 2 GB acceptance criterion (`PRD.md:963`), undo derivation from
+sink pairs and the conformance suite — is entirely unwritten, and no code path calls a native
+transfer route today. Rows 6, 10, 11 and 13 below stay NOT RUN for want of code. The tranche must
+not be reported complete, and a later tranche must not start on this branch (`CLAUDE.md` rule 1)
+until slice 5 lands and the manual rows that need a desktop session are executed.
 
 ## Slice 0 â€” spike findings (spec section 12)
 
