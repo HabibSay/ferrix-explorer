@@ -78,11 +78,50 @@ pub struct Orchestrator {
     /// Folder the last submitted command modifies; the dispatcher refreshes it on
     /// completion when it is still the visible folder (spec §6).
     refresh_target: Arc<Mutex<Option<PathBuf>>>,
+    /// Tranche 3 slice 2: the geometry, rows and current folder the OLE drop target
+    /// hit-tests against. The UI keeps it current; the shell's drag loop only reads it.
+    drop_context: Arc<Mutex<crate::drag_drop::DropContext>>,
+}
+
+/// The folder a `Location` can receive drops into.
+///
+/// Only a local path has a real directory behind it; every other view refuses a drop
+/// with a message instead of redirecting (spec §1), which the sink reports by seeing
+/// `None` here.
+fn drop_background(location: &Location) -> Option<PathBuf> {
+    match location {
+        Location::Local(path) => Some(path.clone()),
+        _ => None,
+    }
+}
+
+/// Publishes the rows the list shows into the shared OLE drop context.
+///
+/// The listing paths below push their rows straight to Slint instead of going through
+/// [`Orchestrator::push_rows_to_window`], so they publish the drop hit-test state here.
+/// The lock order is always view model (already released) then drop context, matching
+/// [`Orchestrator::push_rows_to_window`].
+fn publish_drop_rows(
+    drop_context: &Arc<Mutex<crate::drag_drop::DropContext>>,
+    rows: Vec<crate::drag_drop::ListRow>,
+    background: Option<PathBuf>,
+) {
+    if let Ok(mut context) = drop_context.lock() {
+        context.set_rows(rows, background);
+    }
 }
 
 impl Orchestrator {
     /// Create a new orchestrator and immediately begin listing `initial_location`.
-    pub fn new(window: slint::Weak<ApplicationWindow>, initial_location: Location) -> Self {
+    ///
+    /// `drop_context` is the shared drop-target state of Tranche 3 slice 2: it is
+    /// published here as well as from the UI, because the OLE callbacks must never query
+    /// the window from inside the shell's modal drag loop.
+    pub fn new(
+        window: slint::Weak<ApplicationWindow>,
+        initial_location: Location,
+        drop_context: Arc<Mutex<crate::drag_drop::DropContext>>,
+    ) -> Self {
         let runtime = Runtime::new().expect("Tokio runtime");
         let view_state = ViewStateStore::load().unwrap_or_else(|err| {
             tracing::warn!(%err, "Could not load view state; using defaults");
@@ -120,6 +159,7 @@ impl Orchestrator {
             clean_ui_rx: Some(clean_ui_rx),
             activity: Arc::new(Mutex::new(crate::activity::ActivityStore::new())),
             refresh_target: Arc::new(Mutex::new(None)),
+            drop_context,
         };
 
         orch.start_listing(initial_location);
@@ -145,6 +185,27 @@ impl Orchestrator {
         };
         runtime.spawn(async move {
             dispatch_op_events(orch, event_rx, conflict_rx, clean_rx).await;
+        });
+    }
+
+    /// Moves the OLE drop receiver into its own task (Tranche 3 slice 2).
+    ///
+    /// Drops get a task of their own instead of sharing the op-event loop: a resolved
+    /// drop is produced *inside* the shell's modal drag loop, where taking the
+    /// orchestrator's lock could deadlock against a context menu that already holds it
+    /// on this thread. The sender never blocks, so `DropOutcome` is returned to the
+    /// shell immediately (rule 4).
+    pub fn spawn_drop_dispatch(
+        orch: Arc<Mutex<Orchestrator>>,
+        mut drop_rx: tokio::sync::mpsc::UnboundedReceiver<crate::drag_drop::ResolvedDrop>,
+    ) {
+        let runtime = orch.lock().expect("orchestrator").runtime.handle().clone();
+        runtime.spawn(async move {
+            while let Some(resolved) = drop_rx.recv().await {
+                orch.lock()
+                    .expect("orchestrator")
+                    .handle_resolved_drop(resolved);
+            }
         });
     }
 
@@ -743,9 +804,16 @@ impl Orchestrator {
         self.push_status_to_window();
     }
 
-    /// A row press arms a drag: the payload is the selection when the pressed row
-    /// is part of it, otherwise just that row (Explorer rule).
-    pub fn on_drag_pressed(&mut self, entry_id: u64) -> slint::DataTransfer {
+    /// The payload a row drag carries (Tranche 3 slice 2).
+    ///
+    /// Explorer rule: the selection when the pressed row is part of it, otherwise just
+    /// that row. The advertised preference is a move — the default rule then keeps a
+    /// move inside one volume and degrades it to a copy across volumes
+    /// (`fx_ops::drag::resolve_action`).
+    ///
+    /// The payload is built *before* the drag starts, so the orchestrator's lock is not
+    /// held across `DoDragDrop`'s modal pump.
+    pub fn drag_request(&self, entry_id: u64) -> Option<fx_shell::DragSourceRequest> {
         let paths = {
             let vm = self.view_model.lock().expect("vm lock");
             if vm.is_selected(entry_id) {
@@ -754,74 +822,43 @@ impl Orchestrator {
                 vm.entry_path(entry_id).into_iter().collect::<Vec<_>>()
             }
         };
-        let mut transfer = slint::DataTransfer::default();
-        transfer.set_file_paths(paths);
-        transfer
+        if paths.is_empty() {
+            return None;
+        }
+        Some(fx_shell::DragSourceRequest {
+            paths,
+            effect: fx_shell::DragEffect::Move,
+        })
     }
 
-    /// `can-drop` already rejected wrong targets; this is the final negotiation
-    /// and enqueue. Codes: 0 none, 1 copy, 2 move (mirrors `DragAction`).
-    pub fn on_drop_requested(
-        &mut self,
-        data: slint::DataTransfer,
-        proposed: i32,
-        target_id: i32,
-    ) -> i32 {
-        let Ok(iter) = data.file_paths() else {
-            return 0;
-        };
-        let paths: Vec<PathBuf> = iter.map(|p| p.to_path_buf()).collect();
+    /// Applies a drop the OLE sink resolved (Tranche 3 slice 2).
+    ///
+    /// Runs on the drop dispatcher task — never inside the shell's modal drag loop — so
+    /// the orchestrator's lock is taken on a thread that cannot already hold it (rule 4).
+    /// The sink has already done the policy work: the modifiers, the volume comparison
+    /// and the no-op rule all happened before the drop was handed over.
+    pub fn handle_resolved_drop(&mut self, resolved: crate::drag_drop::ResolvedDrop) {
+        use fx_ops::drag::DropAction;
+        use fx_ops::plan::TransferKind;
+
+        let crate::drag_drop::ResolvedDrop {
+            paths,
+            destination,
+            action,
+        } = resolved;
         if paths.is_empty() {
-            return 0;
+            return;
         }
-        let destination = if target_id < 0 {
-            let Some(folder) = self.local_folder() else {
-                self.announce_unsupported_location();
-                return 0;
-            };
-            folder
-        } else {
-            let Some(p) = self
-                .view_model
-                .lock()
-                .expect("vm lock")
-                .entry_path(target_id as u64)
-            else {
-                return 0;
-            };
-            p
+
+        let kind = match action {
+            DropAction::Copy => TransferKind::Copy,
+            DropAction::Move => TransferKind::Move,
+            DropAction::Shortcut => {
+                self.create_shortcuts_for_drop(paths, destination);
+                return;
+            }
         };
-        // Rule 15: dropping rows back onto their own folder is a no-op with a message.
-        if paths
-            .first()
-            .and_then(|p| p.parent())
-            .is_some_and(|par| par == destination.as_path())
-        {
-            let window_weak = self.window.clone();
-            invoke_from_event_loop(move || {
-                if let Some(win) = window_weak.upgrade() {
-                    win.set_status_message(SharedString::from(strings::STATUS_DROP_IN_SOURCE));
-                }
-            })
-            .ok();
-            return 0;
-        }
-        use fx_ops::port::PlatformOps;
-        let wanted_copy = proposed == 1;
-        let same_volume = match (
-            self.port.volume_id(&paths[0]),
-            self.port.volume_id(&destination),
-        ) {
-            (Ok(a), Ok(b)) => a == b,
-            _ => true,
-        };
-        // Explorer default: no modifier on a cross-volume drag is a copy, never a move.
-        let kind = if wanted_copy || !same_volume {
-            fx_ops::plan::TransferKind::Copy
-        } else {
-            fx_ops::plan::TransferKind::Move
-        };
-        let is_copy = kind == fx_ops::plan::TransferKind::Copy;
+        let is_copy = kind == TransferKind::Copy;
         let id =
             self.operations
                 .transfer_paths(paths, destination.clone(), kind, self.port.clone());
@@ -837,7 +874,57 @@ impl Orchestrator {
             },
             Some(destination),
         );
-        if is_copy { 1 } else { 2 }
+    }
+
+    /// The shortcut half of a drop: one `.lnk` per dropped path, written off the UI
+    /// thread (spec §7).
+    ///
+    /// The folder watcher picks the new links up like any other change, so no explicit
+    /// refresh is needed here; the status line reports the outcome.
+    fn create_shortcuts_for_drop(&mut self, paths: Vec<PathBuf>, destination: PathBuf) {
+        let links: Vec<(PathBuf, PathBuf)> = paths
+            .iter()
+            .filter_map(|source| {
+                fx_shell::shortcut_link_path(&destination, source)
+                    .map(|link| (source.clone(), link))
+            })
+            .collect();
+        if links.is_empty() {
+            // Only drive roots land here: they have no name to build a link from.
+            tracing::warn!(
+                count = paths.len(),
+                destination = %destination.display(),
+                "shortcut drop: no link name for these sources"
+            );
+            return;
+        }
+
+        let window_weak = self.window.clone();
+        let expected = links.len();
+        // SAFETY of the threading: the task runs on a pool thread with no COM mode yet,
+        // which `fx_shell::create_shortcut` establishes and tears down itself.
+        let _task = self.runtime.handle().clone().spawn_blocking(move || {
+            let mut created = 0_usize;
+            for (source, link) in &links {
+                match fx_shell::create_shortcut(source, link) {
+                    Ok(()) => created += 1,
+                    Err(error) => tracing::warn!(
+                        %error,
+                        source = %source.display(),
+                        link = %link.display(),
+                        "shortcut creation failed"
+                    ),
+                }
+            }
+            if created == expected {
+                invoke_from_event_loop(move || {
+                    if let Some(win) = window_weak.upgrade() {
+                        win.set_status_message(SharedString::from(strings::STATUS_DONE));
+                    }
+                })
+                .ok();
+            }
+        });
     }
 
     fn on_create_file(&mut self) {
@@ -1039,10 +1126,7 @@ impl Orchestrator {
     /// The current folder when the view is a local path. Non-local locations do not
     /// support Tranche 2 operations (spec §1: refuse with a message, never redirect).
     fn local_folder(&self) -> Option<PathBuf> {
-        match &self.history.current().location {
-            Location::Local(p) => Some(p.clone()),
-            _ => None,
-        }
+        drop_background(&self.history.current().location)
     }
 
     fn announce_unsupported_location(&self) {
@@ -1114,6 +1198,9 @@ impl Orchestrator {
         let breadcrumb: Vec<SharedString> = build_breadcrumb_segments(&location);
         let columns = build_column_specs(&folder_state.column_layout, &folder_state.sort_key);
         let window_weak = self.window.clone();
+        // The drop hit-test must follow the clear: an empty list in the new folder.
+        let drop_context_clear = self.drop_context.clone();
+        let background = drop_background(&location);
         invoke_from_event_loop(move || {
             if let Some(win) = window_weak.upgrade() {
                 win.set_current_path(path_str);
@@ -1125,6 +1212,7 @@ impl Orchestrator {
                 win.set_status_selected_count(SharedString::default());
                 win.set_status_selected_bytes(SharedString::default());
             }
+            publish_drop_rows(&drop_context_clear, Vec::new(), background);
         })
         .ok();
 
@@ -1143,6 +1231,8 @@ impl Orchestrator {
         let location_watch = location.clone();
         let generation_watch = self.generation;
         let cancel_watch = self.cancel.clone();
+        let drop_context_watch = self.drop_context.clone();
+        let background_watch = drop_background(&location);
         self.runtime.spawn(async move {
             while let Some(_event) = watch_rx.recv().await {
                 if cancel_watch.is_cancelled() {
@@ -1161,6 +1251,8 @@ impl Orchestrator {
 
                 let vm_recv = vm_arc_watch.clone();
                 let win_recv = window_weak_watch.clone();
+                let drop_context_recv = drop_context_watch.clone();
+                let background_recv = background_watch.clone();
                 let recv_fut = async move {
                     while let Some(batch) = rx.recv().await {
                         if batch.generation != generation_watch {
@@ -1169,11 +1261,24 @@ impl Orchestrator {
                         let entries = batch.entries.clone();
                         let vm_c = vm_recv.clone();
                         let ww = win_recv.clone();
+                        let drop_context_batch = drop_context_recv.clone();
+                        let background_batch = background_recv.clone();
                         invoke_from_event_loop(move || {
-                            let rows: Vec<fx_ui::FileRow> = {
+                            let (rows, drop_rows) = {
                                 let mut vm = vm_c.lock().expect("vm lock");
                                 vm.append_batch(entries);
-                                vm.to_ui_rows().into_iter().map(ui_row_to_slint).collect()
+                                let rows: Vec<fx_ui::FileRow> =
+                                    vm.to_ui_rows().into_iter().map(ui_row_to_slint).collect();
+                                let drop_rows = vm
+                                    .visible_drop_rows()
+                                    .into_iter()
+                                    .map(|(id, path, is_dir)| crate::drag_drop::ListRow {
+                                        id,
+                                        path,
+                                        is_dir,
+                                    })
+                                    .collect();
+                                (rows, drop_rows)
                             };
                             if let Some(win) = ww.upgrade() {
                                 win.set_rows(ModelRc::new(VecModel::from(rows)));
@@ -1189,6 +1294,7 @@ impl Orchestrator {
                                     strings::SELECTED_COUNT_FMT
                                 )));
                             }
+                            publish_drop_rows(&drop_context_batch, drop_rows, background_batch);
                         })
                         .ok();
                     }
@@ -1204,6 +1310,8 @@ impl Orchestrator {
         let window_weak2 = self.window.clone();
         let port_clone = self.port.clone();
         let location_str = location.to_string();
+        let self_drop_context = self.drop_context.clone();
+        let location_batch = location.clone();
 
         self.runtime.spawn(async move {
             let (tx, mut rx) = tokio::sync::mpsc::channel::<ListingBatch>(8);
@@ -1219,12 +1327,25 @@ impl Orchestrator {
                     let batch_error = batch.error.clone();
                     let vm_clone = vm_arc.clone();
                     let win_weak = window_weak2.clone();
+                    let drop_context_batch = self_drop_context.clone();
+                    let background_batch = drop_background(&location_batch);
 
                     invoke_from_event_loop(move || {
-                        let rows: Vec<fx_ui::FileRow> = {
+                        let (rows, drop_rows) = {
                             let mut vm = vm_clone.lock().expect("vm lock");
                             vm.append_batch(entries);
-                            vm.to_ui_rows().into_iter().map(ui_row_to_slint).collect()
+                            let rows: Vec<fx_ui::FileRow> =
+                                vm.to_ui_rows().into_iter().map(ui_row_to_slint).collect();
+                            let drop_rows = vm
+                                .visible_drop_rows()
+                                .into_iter()
+                                .map(|(id, path, is_dir)| crate::drag_drop::ListRow {
+                                    id,
+                                    path,
+                                    is_dir,
+                                })
+                                .collect();
+                            (rows, drop_rows)
                         };
                         if let Some(win) = win_weak.upgrade() {
                             win.set_rows(ModelRc::new(VecModel::from(rows)));
@@ -1241,6 +1362,7 @@ impl Orchestrator {
                                 strings::SELECTED_COUNT_FMT
                             )));
                         }
+                        publish_drop_rows(&drop_context_batch, drop_rows, background_batch);
                         if let Some(err) = batch_error
                             && let Some(win) = win_weak.upgrade()
                         {
@@ -1306,9 +1428,23 @@ impl Orchestrator {
 
     /// Push the current row list from the view model to the Slint window.
     fn push_rows_to_window(&self) {
-        let vm = self.view_model.lock().expect("view model lock");
-        let rows: Vec<fx_ui::FileRow> = vm.to_ui_rows().into_iter().map(ui_row_to_slint).collect();
+        let (rows, drop_rows) = {
+            let vm = self.view_model.lock().expect("view model lock");
+            let rows: Vec<fx_ui::FileRow> =
+                vm.to_ui_rows().into_iter().map(ui_row_to_slint).collect();
+            // Tranche 3 slice 2: the same rows, in the same order, for the OLE drop
+            // hit-test. Published here so the shell never has to ask the view model from
+            // inside its own drag loop.
+            let drop_rows: Vec<crate::drag_drop::ListRow> = vm
+                .visible_drop_rows()
+                .into_iter()
+                .map(|(id, path, is_dir)| crate::drag_drop::ListRow { id, path, is_dir })
+                .collect();
+            (rows, drop_rows)
+        };
         let count = rows.len();
+        let background = self.local_folder();
+        publish_drop_rows(&self.drop_context, drop_rows, background);
         let window_weak = self.window.clone();
         invoke_from_event_loop(move || {
             if let Some(win) = window_weak.upgrade() {

@@ -12,10 +12,13 @@ mod strings;
 mod activity;
 mod conflict_dialog;
 mod context_menu;
+mod drag_drop;
 mod operations;
 mod orchestration;
 mod platform_ops;
 mod shortcuts;
+
+use std::sync::{Arc, Mutex};
 
 use fx_domain::location::Location;
 use fx_settings::{WindowSize, load_window_size, save_window_size};
@@ -28,6 +31,9 @@ use tracing_appender::{
     rolling::{RollingFileAppender, Rotation},
 };
 use windows::Win32::Foundation::HWND;
+
+use crate::drag_drop::{DropContext, DropHost, FerrixDropSink, ListGeometry, ResolvedDrop};
+use crate::platform_ops::WindowsPlatformOps;
 
 fn main() {
     if let Err(error) = run() {
@@ -73,9 +79,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Location::Local(home)
     };
 
+    // Tranche 3 slice 2: the shared drop state. The UI publishes the list geometry
+    // and the rows into it; the OLE callbacks only ever read it, because they run
+    // inside the shell's modal drag loop where the window must not be queried.
+    let drop_context = Arc::new(Mutex::new(DropContext::default()));
+
+    // The drop channel: the sink hands a resolved drop over without blocking, and
+    // the dispatcher task performs the transfer (rule 4).
+    let (drop_tx, drop_rx) = tokio::sync::mpsc::unbounded_channel::<ResolvedDrop>();
+
     // Create the orchestrator and wire all window callbacks.
-    let orchestrator = Orchestrator::new(window.as_weak(), initial_location);
-    let orch = std::sync::Arc::new(std::sync::Mutex::new(orchestrator));
+    let orchestrator = Orchestrator::new(window.as_weak(), initial_location, drop_context.clone());
+    let orch = Arc::new(Mutex::new(orchestrator));
     let orch_close = orch.clone();
     {
         let win = &window;
@@ -257,16 +272,50 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             orch_menu.lock().unwrap().on_context_menu(row);
         });
 
-        // Tranche 2: internal drag-and-drop — payload arming and drop resolution.
+        // Tranche 3 slice 2: a row drag runs an OLE drag source. `DoDragDrop` is a
+        // modal pump on the UI thread — the same shape Explorer's own drag has
+        // (spec §6). The payload is built before the drag starts, so the
+        // orchestrator's lock is not held across the modal loop.
         let orch_drag = orch.clone();
-        win.on_row_drag_pressed(move |id| orch_drag.lock().unwrap().on_drag_pressed(id as u64));
+        win.on_row_drag_started(move |id| {
+            let request = {
+                let orch = orch_drag.lock().unwrap();
+                orch.drag_request(id as u64)
+            };
+            let Some(request) = request else {
+                return;
+            };
+            match fx_shell::run_drag(&request) {
+                Ok(fx_shell::DragOutcome::Dropped(effect)) => {
+                    tracing::debug!(?effect, files = request.paths.len(), "OLE drag finished");
+                }
+                Ok(fx_shell::DragOutcome::Cancelled) => {
+                    tracing::debug!("OLE drag cancelled");
+                }
+                Err(err) => tracing::warn!(%err, "OLE drag failed"),
+            }
+        });
 
-        let orch_drop = orch.clone();
-        win.on_drop_requested(move |data, proposed, target| {
-            orch_drop
-                .lock()
-                .unwrap()
-                .on_drop_requested(data, proposed, target)
+        // Tranche 3 slice 2: the list publishes the geometry the OLE drop hit-test
+        // needs. The shell reads it from the shared context; it never asks the
+        // window from inside its own drag loop.
+        let drop_context_geometry = drop_context.clone();
+        let window_weak_geometry = window.as_weak();
+        win.on_list_geometry_changed(move |top, height, row_height, scroll| {
+            let scale_factor = window_weak_geometry
+                .upgrade()
+                .map(|win| win.window().scale_factor())
+                .unwrap_or(1.0);
+            let geometry = ListGeometry {
+                viewport_top: top,
+                viewport_height: height,
+                row_height,
+                scroll_offset: scroll,
+                row_count: 0,
+            };
+            if let Ok(mut context) = drop_context_geometry.lock() {
+                context.set_geometry(geometry, scale_factor);
+            }
         });
 
         // Tranche 2: selection by pattern (OPS-11).
@@ -287,6 +336,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start the event dispatcher now that the orchestrator is addressable.
     Orchestrator::spawn_event_dispatch(orch.clone());
+
+    // Tranche 3 slice 2: the drop dispatcher. A resolved drop is produced inside the
+    // shell's modal drag loop, so the work is handed to a task of its own rather
+    // than taken on the orchestrator's lock there (rule 4).
+    Orchestrator::spawn_drop_dispatch(orch.clone(), drop_rx);
+
+    // The window can move to a monitor with another scale factor, and the list
+    // geometry does not change when it does — yet the shell hands the drop point in
+    // physical pixels. The factor is therefore refreshed while the app runs.
+    let drop_context_scale = drop_context.clone();
+    let window_weak_scale = window.as_weak();
+    let scale_timer = slint::Timer::default();
+    scale_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_secs(1),
+        move || {
+            let Some(win) = window_weak_scale.upgrade() else {
+                return;
+            };
+            let scale = win.window().scale_factor();
+            if let Ok(mut context) = drop_context_scale.lock() {
+                context.set_scale_factor(scale);
+            }
+        },
+    );
 
     // Persist window size when the user closes the window.
     let window_weak = window.as_weak();
@@ -321,6 +395,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let window_weak_ole = window.as_weak();
+    let drop_context_ole = drop_context.clone();
     let ole_timer = slint::Timer::default();
     ole_timer.start(
         slint::TimerMode::SingleShot,
@@ -329,8 +404,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let Some(win) = window_weak_ole.upgrade() else {
                 return;
             };
+            // Tranche 3 slice 2: the drop target is the application sink, which owns
+            // the policy (modifiers, volume, no-op rule) and hands the work over.
+            let host = WindowDropHost {
+                sender: drop_tx.clone(),
+                window: win.as_weak(),
+            };
+            let sink = FerrixDropSink::new(
+                drop_context_ole.clone(),
+                Arc::new(WindowsPlatformOps),
+                Arc::new(host),
+                crate::drag_drop::shell_modifiers,
+            );
             match get_hwnd(&win) {
-                Ok(hwnd) => match OleDropRegistration::register(hwnd) {
+                Ok(hwnd) => match OleDropRegistration::register(hwnd, Arc::new(sink)) {
                     Ok(reg) => {
                         DROP_REG.with(|cell| *cell.borrow_mut() = Some(reg));
                         tracing::info!("OLE drop target registered");
@@ -357,6 +444,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // ole_timer is dropped here; the single-shot has already fired so this is a no-op.
     drop(ole_timer);
 
+    // The scale-factor timer stops with the window.
+    drop(scale_timer);
+
     tracing::info!("Ferrix Explorer stopped");
     Ok(())
 }
@@ -382,6 +472,36 @@ fn get_hwnd(window: &ApplicationWindow) -> Result<HWND, Box<dyn std::error::Erro
             Ok(HWND(hwnd_isize as *mut _))
         }
         other => Err(format!("Unexpected window handle type: {other:?}").into()),
+    }
+}
+
+// ── Drop host ──────────────────────────────────────────────────────────────────
+
+/// The application's side of an OLE drop.
+///
+/// The sink calls this from inside the shell's modal drag loop, so neither method may
+/// take the orchestrator's lock: `submit` only pushes the resolved drop onto the
+/// unbounded channel the dispatcher task drains, and `announce` only queues a status
+/// message for the UI thread.
+struct WindowDropHost {
+    sender: tokio::sync::mpsc::UnboundedSender<ResolvedDrop>,
+    window: slint::Weak<ApplicationWindow>,
+}
+
+impl DropHost for WindowDropHost {
+    fn submit(&self, drop: &ResolvedDrop) -> bool {
+        // An unbounded send never blocks, so the shell gets its answer immediately.
+        self.sender.send(drop.clone()).is_ok()
+    }
+
+    fn announce(&self, message: &'static str) {
+        let window = self.window.clone();
+        slint::invoke_from_event_loop(move || {
+            if let Some(win) = window.upgrade() {
+                win.set_status_message(slint::SharedString::from(message));
+            }
+        })
+        .ok();
     }
 }
 
@@ -490,5 +610,36 @@ mod tests {
                 "the native menu hard-codes the label {label}"
             );
         }
+    }
+
+    /// Tranche 3 slice 2 — rule 8 evidence: does Ferrix really own the OLE drop
+    /// registration on its own window?
+    ///
+    /// winit 0.30 registers its own `IDropTarget` on every window it creates
+    /// (`platform_specific.drag_and_drop` defaults to true) and Slint's winit backend
+    /// never relays winit's `WindowEvent::DragEntered`/`DragDropped` to Slint code. If
+    /// winit owns the registration, our own `RegisterDragDrop` on the same HWND must
+    /// fail, which would make the OLE drop target of slice 2 dead on arrival.
+    ///
+    /// `OleDropRegistration::register` therefore revokes a foreign registration and
+    /// retries. The probe that proves the three states of the window's registration
+    /// runs as an example binary, because a native window needs the main thread and the
+    /// test harness runs its tests on threads of their own — and because raw Win32 code
+    /// belongs in `fx-shell` only (rule 3):
+    /// `cargo run -p fx-shell --example ole_registration_probe`.
+    #[test]
+    fn the_ole_registration_probe_lives_in_an_example_binary() {
+        // The probe needs a native window, and a native window needs the main thread.
+        // Keeping the reason here stops the next reader from moving it back into a
+        // test, where it silently finds no window at all.
+        let probe = include_str!("../../fx-shell/examples/ole_registration_probe.rs");
+        assert!(
+            probe.contains("RegisterDragDrop"),
+            "the probe must exercise the drop registration"
+        );
+        assert!(
+            probe.contains("winit"),
+            "the probe must name the registration it takes over"
+        );
     }
 }

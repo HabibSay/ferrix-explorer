@@ -156,6 +156,22 @@ impl FileListViewModel {
             .collect()
     }
 
+    /// Rows in view order with what the OLE drop target needs (Tranche 3 slice 2):
+    /// the id, the filesystem path and whether the row can receive a drop. The order
+    /// matches `to_ui_rows`, which is the order the list renders.
+    pub fn visible_drop_rows(&self) -> Vec<(u64, std::path::PathBuf, bool)> {
+        self.visible_entries
+            .iter()
+            .map(|e| {
+                (
+                    e.id.0,
+                    e.path.clone(),
+                    matches!(e.kind, EntryKind::Directory),
+                )
+            })
+            .collect()
+    }
+
     pub fn selected_count(&self) -> usize {
         self.selected_ids.len()
     }

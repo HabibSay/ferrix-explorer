@@ -91,6 +91,36 @@ tests, clippy, `cargo deny`, `cargo audit`.
 the 66 `%TEMP%` failures of the local baseline do not reproduce. The local-only failures are
 therefore environmental, not logical.
 
+### Slice 2 gates, re-checked (2026-11-16)
+
+The slice-2 work was present but uncommitted, and it did not build: clippy failed on the missing
+`examples/ole_registration_probe.rs` and on a redundant field name, and one `fx-shell` test failed.
+The following was repaired before the gates below were observed.
+
+| Repair | File |
+|---|---|
+| `?` instead of `match` on both `GetData` calls (clippy `question_mark`) | `crates/fx-shell/src/drop_target.rs` |
+| `row_height` instead of `row_height: row_height` (clippy `redundant_field_names`) | `crates/fx-app/src/main.rs` |
+| Dead `is_main_thread` test helper removed (clippy `dead_code`) | `crates/fx-app/src/main.rs` |
+| The probe the test asserts on now exists, in `fx-shell` where rule 3 allows raw Win32: `crates/fx-shell/examples/ole_registration_probe.rs`, and the `include_str!` points at it | `crates/fx-shell/examples/ole_registration_probe.rs`, `crates/fx-app/src/main.rs` |
+| `a_shortcut_drop_writes_a_link_that_points_at_its_target` expected `target (2).lnk` for the duplicate, contradicting both its own first assertion (`target.txt.lnk`) and the documented rule in `shortcut_link_path` ("the link keeps the whole name of the target"); corrected to `target.txt (2).lnk` | `crates/fx-shell/src/drop_source.rs` |
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --all -- --check` | **PASS** (exit 0) |
+| `cargo check --workspace --all-targets` | **PASS** (exit 0) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | **PASS** (exit 0), no suppressions, no `#[allow]` added |
+| `cargo deny check` | **PASS** offline (advisories ok, bans ok, licenses ok, sources ok); the live advisory-database refresh fails on this host (`git ... fetch` returns non-utf8 output), so `--offline` was used against the cached DB |
+| `cargo audit` | **PASS** (exit 0; 8 pre-existing allowed warnings, 0 vulnerabilities) |
+| `cargo test --workspace --all-targets --no-fail-fast` | **PASS** with `TEMP`/`TMP` at `target\tmp`: `fx-shell` lib 14/14, `fx-app` 56/56, `fx-domain` 53/53, `fx-ops` lib 85/85 + transfer 22/22, `fx-fs` 7/7 + listing 6/6 + longpath 3/3, `fx-settings` 12/12, `fx-ui` 13/13 + keyboard 3/3, `fx-a11y` 1/1; `fx-shell` recycle_bin 3 ignored manual rows. Two targets (`fx-settings --lib`, `fx-ui --test keyboard`) had to be re-run alone: their first launch was refused with `Acces refuse. (os error 5)`, the known security-layer behaviour, and both pass on the retry |
+
+**Slice coverage after this check.** Slices 0, 1 and 2 have code. Slices **3, 4 and 5 have no code
+at all**: there is no `fx-shell/src/properties.rs` or `fx-app/src/properties.rs` (slice 3), no
+`thumbnails.rs` and no view-model thumbnail slots (slice 4), and no `file_operation.rs`, native
+runner or `crates/fx-app/tests/native_conformance.rs` (slice 5). The tranche is therefore **not
+complete** and does not meet slice 5's sign-off gate (spec section 13); the rows below that belong
+to slices 3-5 stay NOT RUN for want of code, not for want of a desktop session.
+
 ## Slice 0 â€” spike findings (spec section 12)
 
 Gate per spec: findings recorded here; decisions 1-8 confirmed or amended in an addendum to the

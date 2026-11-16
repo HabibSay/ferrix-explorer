@@ -32,21 +32,21 @@ struct ColumnSpec {
 // A single row in the file list.
 component FileListItem inherits Rectangle {
     in property <FileRow> entry;
-    in property <data-transfer> drag-payload;
     in property <bool> editing;
     in property <string> seed-text;
     in property <int> seed-selection;
+    // The row height the list publishes; the OLE drop hit-test uses the same number.
+    in property <length> item-height: 22px;
     property <string> editing-error: "";
     callback activated();
     callback selected(bool, bool);  // ctrl, shift
     callback context-menu(length, length);
-    callback drag-armed();
-    callback dropped-on-folder(data-transfer, int);
+    callback drag-started();
     callback rename-committed(string);
     callback rename-cancelled();
     callback rename-validate(string) -> string;
 
-    height: 22px;
+    height: root.item-height;
     background: self.entry.selected ? #0078d7 : Colors.transparent;
 
     accessible-role: list-item;
@@ -54,39 +54,42 @@ component FileListItem inherits Rectangle {
         + (self.entry.selected ? ", selected" : "");
     accessible-action-default => { root.activated(); }
 
-    // Drag source: a press past the threshold starts with the bound payload.
-    drag := DragArea {
-        allow-copy: true;
-        allow-move: true;
-        data: root.drag-payload;
-    }
-
-    // Drop target: folders accept drops; the negotiated action comes from the
-    // modifier-aware proposed action.
-    row-drop := DropArea {
-        enabled: root.entry.is-folder;
-        can-drop(event) => {
-            return event.proposed-action;
-        }
-        dropped(event) => {
-            let code = event.proposed-action == DragAction.copy ? 1 : 2;
-            root.dropped-on-folder(event.data, code);
-            return event.proposed-action;
-        }
-    }
-
+    // Tranche 3 slice 2: the drag gesture. The pointer crossing the threshold asks
+    // the host to run an OLE drag (spec §7, decision 8); the Slint-internal transport
+    // is retired, so OLE is the single transport in both directions.
     touch := TouchArea {
+        // Where the press started, and whether the gesture already became a drag.
+        property <length> press-x: 0px;
+        property <length> press-y: 0px;
+        property <bool> dragging: false;
+
         double-clicked => { root.activated(); }
-        clicked => { root.selected(false, false); }
+        clicked => {
+            // A drag that ended on the row does not change the selection.
+            if (!touch.dragging) {
+                root.selected(false, false);
+            }
+        }
         pointer-event(event) => {
             if (event.button == PointerEventButton.left
                     && event.kind == PointerEventKind.down) {
-                // Arm the payload before the runtime crosses the drag threshold.
-                root.drag-armed();
+                touch.press-x = self.mouse-x;
+                touch.press-y = self.mouse-y;
+                touch.dragging = false;
             }
             if (event.button == PointerEventButton.right
                     && event.kind == PointerEventKind.up) {
                 root.context-menu(self.mouse-x, self.mouse-y);
+            }
+        }
+        moved => {
+            if (!touch.dragging) {
+                let dx = (self.mouse-x - touch.press-x) / 1px;
+                let dy = (self.mouse-y - touch.press-y) / 1px;
+                if (abs(dx) > 5 || abs(dy) > 5) {
+                    touch.dragging = true;
+                    root.drag-started();
+                }
             }
         }
     }
@@ -167,47 +170,47 @@ component FileListItem inherits Rectangle {
 // Virtualized list component.
 component FileList inherits Rectangle {
     in property <[FileRow]> rows: [];
-    in-out property <data-transfer> drag-payload;
     in property <int> rename-target-id: -1;
     in property <string> rename-seed-text;
     in property <int> rename-seed-selection;
     callback row-activated(int);
     callback row-selected(int, bool, bool);
     callback context-menu-requested(int, length, length);
-    callback drag-pressed(int) -> data-transfer;
-    callback drop-on-folder(int, data-transfer, int) -> int;
+    callback drag-started(int);
     callback rename-committed(int, string);
     callback rename-cancelled(int);
     callback rename-validate(string) -> string;
 
+    // Tranche 3 slice 2: the geometry the OLE drop hit-test needs. The UI publishes
+    // it because the shell's drop callbacks run inside its own modal drag loop and
+    // must not query the window there (spec §7).
+    //   viewport-top:    top of the list, in logical pixels from the window origin
+    //   viewport-height: height of the list viewport, in logical pixels
+    //   scroll-offset:   how far the list is scrolled down, in logical pixels
+    //   row-height:      height of one row, in logical pixels
+    out property <length> viewport-top: self.absolute-position.y;
+    out property <length> viewport-height: file-list.visible-height;
+    out property <length> scroll-offset: -file-list.content-y;
+    out property <length> row-height: 22px;
+    callback geometry-changed();
+
     accessible-role: list;
 
-    // Drop onto the current folder itself (empty background of the list).
-    bg-drop := DropArea {
-        can-drop(event) => {
-            return event.proposed-action;
-        }
-        dropped(event) => {
-            let code = event.proposed-action == DragAction.copy ? 1 : 2;
-            root.drop-on-folder(-1, event.data, code);
-            return event.proposed-action;
-        }
-    }
+    changed viewport-top => { root.geometry-changed(); }
+    changed viewport-height => { root.geometry-changed(); }
+    changed scroll-offset => { root.geometry-changed(); }
 
-    ListView {
+    file-list := ListView {
         for file-row[i] in rows: FileListItem {
             entry: file-row;
-            drag-payload: root.drag-payload;
+            item-height: root.row-height;
             editing: file-row.id == root.rename-target-id;
             seed-text: root.rename-seed-text;
             seed-selection: root.rename-seed-selection;
             activated => { root.row-activated(file-row.id); }
             selected(ctrl, shift) => { root.row-selected(file-row.id, ctrl, shift); }
             context-menu(x, y) => { root.context-menu-requested(file-row.id, x, y); }
-            drag-armed => { root.drag-payload = root.drag-pressed(file-row.id); }
-            dropped-on-folder(data, code) => {
-                root.drop-on-folder(file-row.id, data, code);
-            }
+            drag-started => { root.drag-started(file-row.id); }
             rename-committed(text) => { root.rename-committed(file-row.id, text); }
             rename-cancelled() => { root.rename-cancelled(file-row.id); }
             rename-validate(text) => {
@@ -594,11 +597,13 @@ export component ApplicationWindow inherits Window {
     in-out property <bool> confirm-empty-clean: false;
     in property <string> empty-clean-count-text: "";
 
-    // Tranche 2: internal drag-and-drop (OPS-06). The payload is built by the host
-    // when a row press arms a drag; data-transfer stays opaque to Slint code.
-    in-out property <data-transfer> drag-payload;
-    callback row-drag-pressed(int) -> data-transfer;
-    callback drop-requested(data-transfer, int, int) -> int;
+    // Tranche 3 slice 2: OLE drag-and-drop (OPS-07). The row drag asks the host to
+    // run a `DoDragDrop` source (spec §7); the list publishes the geometry the OLE
+    // drop hit-test needs, because the shell's callbacks run inside its own modal
+    // drag loop and cannot ask the window there.
+    callback row-drag-started(int);
+    // (viewport-top, viewport-height, row-height, scroll-offset), all in logical pixels.
+    callback list-geometry-changed(length, length, length, length);
     callback pattern-submitted(string);
     callback pattern-cancelled();
     callback empty-clean-answered(bool);
@@ -720,7 +725,6 @@ export component ApplicationWindow inherits Window {
                     width: 100%;
                     height: 100%;
                     rows: root.rows;
-                    drag-payload: root.drag-payload;
                     row-activated(id) => { root.row-activated(id); }
                     row-selected(id, ctrl, shift) => {
                         // The row's TouchArea absorbs the press; take keyboard focus
@@ -729,11 +733,10 @@ export component ApplicationWindow inherits Window {
                         root.row-selected(id, ctrl, shift);
                     }
                     context-menu-requested(id, x, y) => { root.context-menu-requested(id, x, y); }
-                    drag-pressed(id) => {
-                        return root.row-drag-pressed(id);
-                    }
-                    drop-on-folder(id, data, code) => {
-                        return root.drop-requested(data, code, id);
+                    drag-started(id) => { root.row-drag-started(id); }
+                    geometry-changed => {
+                        root.list-geometry-changed(self.viewport-top, self.viewport-height,
+                            self.row-height, self.scroll-offset);
                     }
                     rename-target-id: root.status-rename-target-id;
                     rename-seed-text: root.rename-seed-text;

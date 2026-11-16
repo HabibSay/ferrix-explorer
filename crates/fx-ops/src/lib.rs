@@ -14,6 +14,7 @@ pub mod conflict;
 pub mod control;
 pub mod create;
 pub mod delete;
+pub mod drag;
 pub mod error;
 pub mod plan;
 pub mod port;
@@ -23,6 +24,7 @@ pub mod routing;
 pub mod transfer;
 pub mod undo;
 
+pub use drag::{DropAction, DropModifiers, is_same_folder_drop, resolve_action};
 pub use error::{ItemFailure, OperationError};
 pub use plan::{OperationPlan, PathPair, PlanItem, TransferKind, plan_transfer};
 pub use port::{PlatformOps, RecycledItem, VolumeKind};

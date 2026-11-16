@@ -17,6 +17,13 @@ windows = { workspace = true, features = [
     # Tranche 3 slice 0: IFileOperation and its progress sink live behind this
     # sub-feature in windows 0.62 (discovered by compiling spike_fileop, spec §3).
     "Win32_UI_Shell_PropertiesSystem",
+    # Tranche 3 slice 2: the OLE drag source reads CF_HDROP through STGMEDIUM and
+    # the drop target reads the live modifier keys (spec §7).
+    "Win32_System_Com_StructuredStorage",
+    "Win32_UI_Input_KeyboardAndMouse",
+    # Tranche 3 slice 2: ScreenToClient turns the shell's screen coordinates into
+    # the window's client coordinates, which is the space the hit-test works in.
+    "Win32_Graphics_Gdi",
 ] }
 windows-core.workspace = true
 windows-implement.workspace = true
