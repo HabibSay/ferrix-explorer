@@ -13,7 +13,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::plan::OperationPlan;
+use crate::plan::{OperationPlan, PathPair};
+use crate::port::PlatformOps;
 use crate::progress::OperationKind;
 
 /// What the host can do natively, probed once by `fx-app`.
@@ -92,6 +93,54 @@ pub fn choose_route(
         }
         _ => TransferRoute::BuiltIn,
     }
+}
+
+/// The planned entries whose post-condition does not hold after a native transfer.
+///
+/// Rule 13: a success is derived from what is on disk, never from the Shell's own verdict.
+/// A planned destination that does not exist is a missing item; for a move, a source that
+/// survived is one too (the Shell copied instead of moving, or skipped it). The returned
+/// paths are the destinations to report, so one entry produces one failure.
+pub fn verify_destinations(kind: OperationKind, plan: &OperationPlan) -> Vec<PathBuf> {
+    if !kind.is_transfer() {
+        return Vec::new();
+    }
+    let mut missing = Vec::new();
+    for item in &plan.items {
+        let destination_missing = fs::symlink_metadata(&item.destination).is_err();
+        let source_survived =
+            kind == OperationKind::Move && fs::symlink_metadata(&item.source).is_ok();
+        if destination_missing || source_survived {
+            missing.push(item.destination.clone());
+        }
+    }
+    missing
+}
+
+/// Applies the host's metadata copy to every completed pair of a native copy (decision 9).
+///
+/// The Shell normally carries timestamps and attributes itself, but that is measured, not
+/// assumed: the post-pass makes the parity the Tranche 2 rules require (modification time,
+/// creation time through the Windows adapter, attributes), whatever the Shell did. It runs
+/// for a copy only — after a move the source no longer exists to read from — and returns
+/// the destinations it could not stamp, which the caller logs.
+///
+/// The port gains no method for this (spec §4): `apply_metadata` is exactly the seam.
+pub fn apply_native_metadata(
+    port: &dyn PlatformOps,
+    kind: OperationKind,
+    pairs: &[PathPair],
+) -> Vec<PathBuf> {
+    if kind != OperationKind::Copy {
+        return Vec::new();
+    }
+    let mut failed = Vec::new();
+    for pair in pairs {
+        if port.apply_metadata(&pair.from, &pair.to).is_err() {
+            failed.push(pair.to.clone());
+        }
+    }
+    failed
 }
 
 /// Walks `root` and reports whether `detector` finds a reparse point.
@@ -348,6 +397,79 @@ mod tests {
 
         let found = probe_tree(dir.path(), &|_, _| false).expect("probe");
         assert!(!found);
+    }
+
+    /// A completed copy passes its post-condition; a missing destination does not.
+    #[test]
+    fn post_conditions_follow_the_destination_on_disk() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let source = dir.path().join("a.txt");
+        fs::write(&source, b"hello").expect("write");
+        let destination = dir.path().join("dest");
+        fs::create_dir(&destination).expect("dest dir");
+        let plan = plan_of(
+            vec![plan_item(source.clone(), destination.join("a.txt"), false)],
+            OperationKind::Copy,
+        );
+
+        assert_eq!(
+            verify_destinations(OperationKind::Copy, &plan),
+            vec![destination.join("a.txt")],
+            "before the copy runs, the planned destination is still missing"
+        );
+
+        fs::write(destination.join("a.txt"), b"hello").expect("copy");
+        assert!(verify_destinations(OperationKind::Copy, &plan).is_empty());
+
+        fs::remove_file(destination.join("a.txt")).expect("remove");
+        assert_eq!(
+            verify_destinations(OperationKind::Copy, &plan),
+            vec![destination.join("a.txt")],
+            "a missing destination is reported, so no false success is shown"
+        );
+    }
+
+    /// A move that left its source behind did not move it, even if the copy landed.
+    #[test]
+    fn a_move_whose_source_survives_fails_its_post_condition() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let source = dir.path().join("a.txt");
+        fs::write(&source, b"hello").expect("write");
+        let destination = dir.path().join("dest");
+        fs::create_dir(&destination).expect("dest dir");
+        let target = destination.join("a.txt");
+        let plan = plan_of(
+            vec![plan_item(source.clone(), target.clone(), false)],
+            OperationKind::Move,
+        );
+        fs::write(&target, b"hello").expect("the copy landed");
+
+        assert_eq!(
+            verify_destinations(OperationKind::Move, &plan),
+            vec![target],
+            "the source is still there, so the move did not happen"
+        );
+        fs::remove_file(&source).expect("complete the move");
+        assert!(verify_destinations(OperationKind::Move, &plan).is_empty());
+    }
+
+    /// Kinds that are not transfers have no destination post-condition.
+    #[test]
+    fn non_transfer_kinds_have_no_post_condition() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let plan = plan_of(
+            vec![plan_item(
+                dir.path().join("a.txt"),
+                dir.path().join("b.txt"),
+                false,
+            )],
+            OperationKind::Rename,
+        );
+        assert!(verify_destinations(OperationKind::Rename, &plan).is_empty());
+        assert!(
+            verify_destinations(OperationKind::Copy, &plan).len() == 1,
+            "the same plan is a failure when it is read as a copy"
+        );
     }
 
     #[cfg(windows)]

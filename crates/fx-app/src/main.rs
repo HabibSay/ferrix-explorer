@@ -401,6 +401,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let window_weak_ole = window.as_weak();
     let drop_context_ole = drop_context.clone();
+    // Tranche 3 slice 5: the same tick that registers OLE is the first moment the HWND
+    // exists, which is when the native transfer dialog can be given an owner.
+    let orch_owner = orch.clone();
     let ole_timer = slint::Timer::default();
     ole_timer.start(
         slint::TimerMode::SingleShot,
@@ -422,13 +425,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 crate::drag_drop::shell_modifiers,
             );
             match get_hwnd(&win) {
-                Ok(hwnd) => match OleDropRegistration::register(hwnd, Arc::new(sink)) {
-                    Ok(reg) => {
-                        DROP_REG.with(|cell| *cell.borrow_mut() = Some(reg));
-                        tracing::info!("OLE drop target registered");
+                Ok(hwnd) => {
+                    orch_owner
+                        .lock()
+                        .expect("orchestrator")
+                        .set_owner_window(hwnd);
+                    match OleDropRegistration::register(hwnd, Arc::new(sink)) {
+                        Ok(reg) => {
+                            DROP_REG.with(|cell| *cell.borrow_mut() = Some(reg));
+                            tracing::info!("OLE drop target registered");
+                        }
+                        Err(err) => tracing::warn!(%err, "OLE drop target registration failed"),
                     }
-                    Err(err) => tracing::warn!(%err, "OLE drop target registration failed"),
-                },
+                }
                 Err(err) => tracing::warn!(%err, "Could not obtain HWND for OLE registration"),
             }
         },

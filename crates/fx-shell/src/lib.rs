@@ -10,6 +10,7 @@ pub mod context_menu;
 pub mod drop_source;
 pub mod drop_target;
 pub mod execute;
+pub mod file_operation;
 pub mod file_time;
 pub mod icons;
 pub mod properties;
@@ -25,6 +26,10 @@ pub use drop_source::{
 };
 pub use drop_target::{
     DragEffect, DragPayload, DropModifiers, DropOutcome, DropSink, OleDropRegistration,
+};
+pub use file_operation::{
+    NativeError, NativeEvent, NativeHandle, NativeKind, NativeTransferRequest, open_locked,
+    probe_file_operation, run_native_transfer,
 };
 pub use properties::{PropertiesError, PropertiesMode, open_with, show_properties};
 pub use thumbnails::{

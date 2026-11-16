@@ -86,6 +86,11 @@ pub struct ActivityRow {
     pub id: OperationId,
     pub label: String,
     pub state: RowState,
+    /// Whether this route can pause at all (Tranche 3 slice 5).
+    ///
+    /// `IFileOperation` has no pause, so a native transfer offers cancel and retry only.
+    /// The row starts optimistically on: the route is only known once the plan exists.
+    pub can_pause: bool,
     pub files_done: u64,
     pub files_total: u64,
     pub bytes_done: u64,
@@ -112,6 +117,7 @@ impl ActivityStore {
             id,
             label: meta.label,
             state: RowState::Pending,
+            can_pause: true,
             files_done: 0,
             files_total: 0,
             bytes_done: 0,
@@ -151,6 +157,19 @@ impl ActivityStore {
             .unwrap_or_default();
         row.speed_text = speed_text(p.bytes_per_second);
         row.eta_text = p.eta.map(eta_text).unwrap_or_default();
+    }
+
+    /// Records which engine took the operation, so the pane only offers what it can honour.
+    ///
+    /// A row that switched to the native route while a pause was already requested is left
+    /// reading `Running`: the worker ignores the pause, and showing `Paused` would be a lie.
+    pub fn note_route(&mut self, id: OperationId, native: bool) {
+        if let Some(row) = self.find_mut(id) {
+            row.can_pause = !native;
+            if native && row.state == RowState::Paused {
+                row.state = RowState::Running;
+            }
+        }
     }
 
     pub fn note_paused(&mut self, id: OperationId, paused: bool) {
@@ -313,6 +332,30 @@ mod tests {
             }
             other => panic!("wrong spec: {other:?}"),
         }
+    }
+
+    /// A native row cannot be paused: the pane hides the button rather than showing one
+    /// that does nothing (spec §6).
+    #[test]
+    fn a_native_route_row_cannot_be_paused() {
+        let mut store = ActivityStore::new();
+        let id = OperationId::next();
+        store.push(id, meta("Copy"));
+        assert!(store.rows[0].can_pause, "the route is not known yet");
+
+        store.rows[0].state = RowState::Paused;
+        store.note_route(id, true);
+        assert!(!store.rows[0].can_pause);
+        assert_eq!(
+            store.rows[0].state,
+            RowState::Running,
+            "a native operation never really paused"
+        );
+
+        let built_in = OperationId::next();
+        store.push(built_in, meta("Copy"));
+        store.note_route(built_in, false);
+        assert!(store.rows[1].can_pause);
     }
 
     #[test]

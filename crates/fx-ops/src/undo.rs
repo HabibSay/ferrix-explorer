@@ -41,6 +41,20 @@ pub enum UndoError {
     Failed(OperationError),
 }
 
+/// The journal entry a completed move records.
+///
+/// One definition for both transfer routes: the built-in engine pairs its planned items,
+/// and the native route pairs the endpoints the Shell reported. `Ctrl+Z` therefore cannot
+/// tell the routes apart, which is what decision 3 requires and what the conformance suite
+/// asserts.
+pub fn move_entry(operation: OperationId, pairs: Vec<PathPair>) -> UndoEntry {
+    UndoEntry {
+        operation,
+        kind: OperationKind::Move,
+        action: ReversibleAction::Move { pairs },
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct UndoStack {
     entries: Vec<UndoEntry>,
@@ -465,6 +479,21 @@ mod tests {
         });
         stack.undo(&platform, &OperationControl::new()).unwrap();
         assert!(original.exists());
+    }
+
+    /// The shared derivation names a move and keeps the pairs in the order it was given:
+    /// both routes produce the same entry from the same endpoints.
+    #[test]
+    fn a_move_entry_is_the_same_shape_for_both_routes() {
+        let id = OperationId::next();
+        let pairs = vec![PathPair {
+            from: PathBuf::from(r"C:\src\a.txt"),
+            to: PathBuf::from(r"C:\dst\a.txt"),
+        }];
+        let entry = move_entry(id, pairs.clone());
+        assert_eq!(entry.kind, OperationKind::Move);
+        assert_eq!(entry.operation, id);
+        assert_eq!(entry.action, ReversibleAction::Move { pairs });
     }
 
     #[test]

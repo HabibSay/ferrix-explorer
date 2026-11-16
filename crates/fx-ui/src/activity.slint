@@ -18,6 +18,9 @@ export struct ActivityRow {
     // Behaviour flag: the Pause button switches on this, never on the state word, so a
     // translated label cannot change what the button does.
     is-paused: bool,
+    // Whether the route behind this row can pause at all. A native Shell transfer cannot,
+    // so its row shows cancel and retry only (Tranche 3 slice 5).
+    can-pause: bool,
     error-text: string,
     // Accessible rendering of the progress bar, e.g. "42 percent, 3 of 7 files".
     progress-text: string,
@@ -135,8 +138,8 @@ export component ActivityCenter inherits Rectangle {
                             accessible-label: row.progress-text;
                         }
 
-                        // Pause/Resume button
-                        Button {
+                        // Pause/Resume button — only for a route that can honour it.
+                        if row.can-pause: Button {
                             text: row.is-paused ? Strings.activity-resume : Strings.activity-pause;
                             accessible-label: row.is-paused ? Strings.activity-resume-label : Strings.activity-pause-label;
                             clicked => {

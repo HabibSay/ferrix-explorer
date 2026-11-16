@@ -1,10 +1,14 @@
 //! File-time helpers beyond what `std` can do (setting creation time).
 
-use std::{fs, io, os::windows::io::AsRawHandle, path::Path};
+use std::{
+    fs, io,
+    os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
+    path::Path,
+};
 
 use windows::Win32::{
     Foundation::{FILETIME, HANDLE},
-    Storage::FileSystem::SetFileTime,
+    Storage::FileSystem::{FILE_WRITE_ATTRIBUTES, SetFileTime},
 };
 
 /// Sets the creation time of `to` to match `from` using `SetFileTime`.
@@ -15,9 +19,12 @@ pub fn set_creation_time(from: &Path, to: &Path) -> io::Result<()> {
 
     let filetime = system_time_to_filetime(created)?;
 
-    // Open write access through std and borrow the raw handle, avoiding a
-    // dependency on the Win32_Security feature.
-    let file = fs::OpenOptions::new().write(true).open(to)?;
+    // Attribute access, not write access: a copied file may already carry the source's
+    // read-only bit, and `GENERIC_WRITE` would be refused on it while
+    // `FILE_WRITE_ATTRIBUTES` is exactly what `SetFileTime` needs.
+    let file = fs::OpenOptions::new()
+        .access_mode(FILE_WRITE_ATTRIBUTES.0)
+        .open(to)?;
     let raw_handle = file.as_raw_handle();
 
     // SAFETY: raw_handle is the valid handle owned by `file`, which stays alive for

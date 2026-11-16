@@ -139,7 +139,19 @@ impl Orchestrator {
         });
 
         let port = Arc::new(WindowsPlatformOps);
-        let (operations, event_rx) = OperationRunner::new(runtime.handle().clone());
+        // Tranche 3 slice 5: probe once whether the Shell's operation object exists here.
+        // A machine without it keeps every transfer on the Tranche 2 engine (PRD.md:112).
+        let capability = fx_ops::routing::NativeCapability {
+            file_operation: fx_shell::probe_file_operation(),
+        };
+        tracing::info!(
+            native_transfer = capability.file_operation,
+            "transfer routes available"
+        );
+        let (operations, event_rx) = OperationRunner::new(
+            runtime.handle().clone(),
+            crate::operations::NativeContext::new(capability),
+        );
         let (conflict_ui_tx, conflict_ui_rx) =
             tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
         let (clean_ui_tx, clean_ui_rx) = tokio::sync::mpsc::unbounded_channel::<bool>();
@@ -494,6 +506,14 @@ impl Orchestrator {
         self.sync_activity();
     }
 
+    /// Tells the runner which window the Shell's transfer dialog parents to (slice 5).
+    ///
+    /// Called on the UI thread once Slint has materialised the HWND. The address is stored
+    /// as an `isize` because the transfer runs on a worker thread and `HWND` is not `Send`.
+    pub fn set_owner_window(&mut self, hwnd: windows::Win32::Foundation::HWND) {
+        self.operations.set_owner_window(Some(hwnd.0 as isize));
+    }
+
     fn sync_activity(&self) {
         let rows: Vec<fx_ui::ActivityRow> = self
             .activity
@@ -512,6 +532,7 @@ impl Orchestrator {
                 eta_text: SharedString::from(row.eta_text.clone()),
                 state: SharedString::from(row.state.label()),
                 is_paused: row.state == crate::activity::RowState::Paused,
+                can_pause: row.can_pause,
                 error_text: SharedString::from(row.error_text.clone()),
                 progress_text: SharedString::from(progress_text_of(row)),
             })
@@ -1710,6 +1731,17 @@ async fn dispatch_op_events(
                     }
                 })
                 .ok();
+            }
+            OpEvent::RouteChosen { id, native } => {
+                // Slice 5: the route decides whether the row may offer Pause at all.
+                tracing::debug!(id = id.0, native, "transfer route chosen");
+                let guard = orch.lock().expect("orchestrator");
+                guard
+                    .activity
+                    .lock()
+                    .expect("activity")
+                    .note_route(id, native);
+                guard.sync_activity();
             }
             OpEvent::Completed { id, summary } => {
                 tracing::info!(id = id.0, "operation completed");

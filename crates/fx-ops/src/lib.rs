@@ -29,5 +29,8 @@ pub use error::{ItemFailure, OperationError};
 pub use plan::{OperationPlan, PathPair, PlanItem, TransferKind, plan_transfer};
 pub use port::{PlatformOps, RecycledItem, VolumeKind};
 pub use progress::{OperationId, OperationKind, OperationState, OperationSummary, Progress};
-pub use routing::{ConflictScan, NativeCapability, TransferRoute, choose_route, scan_destination};
+pub use routing::{
+    ConflictScan, NativeCapability, TransferRoute, apply_native_metadata, choose_route,
+    scan_destination, verify_destinations,
+};
 pub use transfer::Transfer;
