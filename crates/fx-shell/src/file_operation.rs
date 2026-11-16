@@ -19,10 +19,10 @@
 //! recorded as unvalidated rather than claimed (CLAUDE.md rule 8).
 
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::Sender,
     },
@@ -279,11 +279,17 @@ fn perform_in_apartment(
         unsafe { operation.SetOwnerWindow(HWND(owner as *mut std::ffi::c_void))? };
     }
 
-    let planned: HashSet<PathBuf> = request.sources.iter().cloned().collect();
+    let parents = Mutex::new(HashMap::new());
+    let planned = request
+        .sources
+        .iter()
+        .map(|source| (comparison_key(source, &parents), source.clone()))
+        .collect();
     let sink = TransferSink {
         events: events.clone(),
         cancel: Arc::clone(cancel),
-        planned: Arc::new(planned),
+        planned,
+        parents,
         bytes_done: AtomicU64::new(0),
     };
     let sink_interface: IFileOperationProgressSink = sink.into();
@@ -352,6 +358,33 @@ fn queue_items(
 
 // ── The progress sink ─────────────────────────────────────────────────────────
 
+/// A path reduced to a key that tolerates an 8.3 short name anywhere in it.
+///
+/// The Shell reports long names while the caller can hold a short one:
+/// `std::env::temp_dir()` answers `C:\Users\RUNNER~1\...` on the CI runner and the Shell
+/// answers `C:\Users\runneradmin\...`, so comparing raw strings lost every undo pair there
+/// (measured, CI run 43917693685). Windows paths are case-insensitive, so the key is
+/// lowercased, and the parent folder is resolved to its long form because it still exists
+/// after a move has taken the item itself away. A folder that cannot be resolved — a
+/// deleted source tree — falls back to the path as written, which is still case-insensitive.
+fn comparison_key(path: &Path, parents: &Mutex<HashMap<PathBuf, PathBuf>>) -> String {
+    let leaf = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let parent = path.parent().unwrap_or(path).to_path_buf();
+    let long = {
+        let mut cache = parents
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        cache
+            .entry(parent.clone())
+            .or_insert_with(|| std::fs::canonicalize(&parent).unwrap_or_else(|_| parent.clone()))
+            .clone()
+    };
+    format!("{}\\{leaf}", long.to_string_lossy().to_lowercase())
+}
+
 /// Translates the Shell's callbacks into [`NativeEvent`] messages.
 ///
 /// Every callback returns immediately except for one decision: whether the caller asked to
@@ -361,8 +394,12 @@ fn queue_items(
 struct TransferSink {
     events: Sender<NativeEvent>,
     cancel: Arc<AtomicBool>,
-    /// The planned top-level sources: only these produce an undo pair.
-    planned: Arc<HashSet<PathBuf>>,
+    /// The planned top-level sources, keyed by [`comparison_key`]: only these produce an
+    /// undo pair. The value is the plan's own path, so an undo entry built from a native
+    /// transfer carries exactly the path a built-in transfer would have carried.
+    planned: HashMap<String, PathBuf>,
+    /// Resolved parent folders, memoised: a folder with a thousand files resolves once.
+    parents: Mutex<HashMap<PathBuf, PathBuf>>,
     bytes_done: AtomicU64,
 }
 
@@ -394,9 +431,9 @@ impl TransferSink {
         let total_bytes = self.bytes_done.fetch_add(bytes, Ordering::Relaxed) + bytes;
 
         if let (Some(source), Some(destination)) = (source, destination) {
-            if self.is_planned(&source) {
+            if let Some(planned) = self.planned_source(&source) {
                 let _ = self.events.send(NativeEvent::ItemDone {
-                    source: source.clone(),
+                    source: planned,
                     destination: destination.clone(),
                 });
             }
@@ -409,15 +446,10 @@ impl TransferSink {
         self.check_cancel()
     }
 
-    /// Whether `path` is one of the planned top-level sources.
-    ///
-    /// Compared case-insensitively: the Shell reports the long form of a name the plan may
-    /// hold in 8.3 form, and Windows paths are case-insensitive anyway.
-    fn is_planned(&self, path: &Path) -> bool {
-        let wanted = path.as_os_str().to_string_lossy().to_lowercase();
-        self.planned
-            .iter()
-            .any(|source| source.as_os_str().to_string_lossy().to_lowercase() == wanted)
+    /// The planned top-level source `path` refers to, if it is one.
+    fn planned_source(&self, path: &Path) -> Option<PathBuf> {
+        let key = comparison_key(path, &self.parents);
+        self.planned.get(&key).cloned()
     }
 
     /// Stops the operation when the caller cancelled, without touching shared state.
@@ -730,6 +762,58 @@ mod tests {
             FOF_NOERRORUI | FOF_SILENT | FOF_NOCONFIRMATION,
             "a headless run must suppress every Shell prompt"
         );
+    }
+
+    /// A short-name ancestor and its long form reach the same key, and the case does not
+    /// matter: this is the comparison that lost every undo pair on the CI runner.
+    #[test]
+    fn a_short_name_ancestor_reaches_the_same_key() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use windows::Win32::Storage::FileSystem::GetShortPathNameW;
+        use windows::core::PCWSTR;
+
+        let folder = std::env::temp_dir().join(format!("fx-key-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).expect("create the fixture folder");
+        let long_folder = std::fs::canonicalize(&folder).expect("canonicalise the fixture");
+        std::fs::write(long_folder.join("a.txt"), b"").expect("write the fixture");
+
+        let wide: Vec<u16> = long_folder
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let mut short = vec![0u16; 1024];
+        // SAFETY: `wide` is a NUL-terminated wide string that outlives the call, and
+        // `short` is a live buffer whose length is passed to the API.
+        let written = unsafe { GetShortPathNameW(PCWSTR(wide.as_ptr()), Some(&mut short)) };
+        let short_folder = if written == 0 || written as usize >= short.len() {
+            long_folder.clone()
+        } else {
+            PathBuf::from(std::ffi::OsString::from_wide(&short[..written as usize]))
+        };
+
+        let parents = Mutex::new(HashMap::new());
+        assert_eq!(
+            comparison_key(&long_folder.join("a.txt"), &parents),
+            comparison_key(&short_folder.join("A.TXT"), &parents),
+            "a short name, a long name and a case change must agree"
+        );
+        assert_ne!(
+            comparison_key(&short_folder.join("a.txt"), &parents),
+            comparison_key(&short_folder.join("b.txt"), &parents),
+            "two files in one folder must not share a key"
+        );
+
+        let _ = std::fs::remove_dir_all(&long_folder);
+    }
+
+    /// A path whose folder is gone still yields a key, so a deleted source tree cannot make
+    /// the sink panic mid-operation.
+    #[test]
+    fn a_missing_folder_still_yields_a_key() {
+        let parents = Mutex::new(HashMap::new());
+        let key = comparison_key(Path::new(r"C:\no-such-fx-folder\a.txt"), &parents);
+        assert!(key.ends_with("a.txt"), "unexpected key: {key}");
     }
 
     /// The Shell rejects a verbatim path, so the prefix is removed for its call only — and
