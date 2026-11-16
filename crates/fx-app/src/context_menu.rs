@@ -73,6 +73,30 @@ pub fn ferrix_items(has_selection: bool) -> Vec<FerrixMenuItem> {
     items
 }
 
+/// The entries only the minimal Ferrix menu carries (spec §8.7).
+///
+/// The native menu gets Properties and the open-with dialog from the Shell itself, so repeating
+/// them in the Ferrix section would show two entries that do the same thing. The fallback
+/// menu has no Shell verbs at all, so without these the user would lose both actions
+/// exactly when the Shell menu could not be shown.
+///
+/// The open-with call needs one file — `OPENASINFO` names a single path — so it is offered only
+/// for a single selection; Properties works for the folder background too, which is the
+/// one selected path's parent.
+pub fn fallback_only_items(selection_len: usize) -> Vec<FerrixMenuItem> {
+    let mut items = vec![FerrixMenuItem {
+        command: FerrixCommand::Properties,
+        label: strings::MENU_PROPERTIES.to_string(),
+    }];
+    if selection_len == 1 {
+        items.push(FerrixMenuItem {
+            command: FerrixCommand::OpenWith,
+            label: strings::MENU_OPEN_WITH.to_string(),
+        });
+    }
+    items
+}
+
 /// What the user chose in the context menu.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MenuChoice {
@@ -108,6 +132,7 @@ pub fn show(
     extensions: &MenuExtensionState,
 ) -> MenuResult {
     let items = ferrix_items(!selection.is_empty());
+    let selection_len = selection.len();
 
     if extensions.native_menu_enabled {
         let request = MenuRequest {
@@ -145,8 +170,14 @@ pub fn show(
         tracing::info!(target: "menu", source = "disabled", "native menu disabled in the settings");
     }
 
-    // The minimal Ferrix menu: the same commands, no Shell verbs (spec §8.7).
-    let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+    // The minimal Ferrix menu: the same commands plus the two the Shell would have
+    // supplied, and no Shell verbs (spec §8.7).
+    let mut fallback_items = items.clone();
+    fallback_items.extend(fallback_only_items(selection_len));
+    let labels: Vec<&str> = fallback_items
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect();
     let started = Instant::now();
     let chosen = fx_shell::show_popup_menu(owner, cursor.0, cursor.1, &labels);
     let visible_ms = started.elapsed().as_millis() as u64;
@@ -154,12 +185,12 @@ pub fn show(
         target: "menu",
         query_ms = 0,
         visible_ms,
-        items = items.len(),
+        items = fallback_items.len(),
         source = "ferrix_fallback",
     );
     MenuResult {
         choice: match chosen {
-            Ok(Some(index)) => match items.get(index) {
+            Ok(Some(index)) => match fallback_items.get(index) {
                 Some(item) => MenuChoice::Ferrix(item.command),
                 None => MenuChoice::Dismissed,
             },
@@ -208,6 +239,44 @@ mod tests {
                 .any(|item| item.command == FerrixCommand::Checksums)
         );
         assert_eq!(with.len() - 1, without.len());
+    }
+
+    /// The fallback menu is never missing the two actions the Shell would have supplied:
+    /// Properties is always there, the open-with entry only for the single file it can act on.
+    #[test]
+    fn the_fallback_menu_carries_the_shell_actions_it_would_otherwise_lose() {
+        let background = fallback_only_items(0);
+        assert_eq!(background.len(), 1);
+        assert_eq!(background[0].command, FerrixCommand::Properties);
+        assert_eq!(background[0].label, strings::MENU_PROPERTIES);
+
+        let one = fallback_only_items(1);
+        assert_eq!(one.len(), 2);
+        assert_eq!(one[1].command, FerrixCommand::OpenWith);
+        assert_eq!(one[1].label, strings::MENU_OPEN_WITH);
+
+        let many = fallback_only_items(5);
+        assert_eq!(many.len(), 1);
+        assert!(
+            !many
+                .iter()
+                .any(|item| item.command == FerrixCommand::OpenWith),
+            "OPENASINFO names one file, so a multi-selection must not offer it"
+        );
+    }
+
+    /// The native section keeps its seven commands: the Shell already puts Properties and
+    /// its open-with entry in the native menu, so adding them here would show duplicates.
+    #[test]
+    fn the_native_section_does_not_repeat_the_shell_actions() {
+        let items = ferrix_items(true);
+        assert!(
+            !items.iter().any(|item| matches!(
+                item.command,
+                FerrixCommand::Properties | FerrixCommand::OpenWith
+            )),
+            "the native menu would show the same entry twice"
+        );
     }
 
     /// The labels come from `resources/en-US.rs`, so a translation cannot change what a

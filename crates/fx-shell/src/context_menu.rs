@@ -73,6 +73,16 @@ pub enum FerrixCommand {
     CopyPath,
     /// Copy the name of the selection to the clipboard (PRD 13.4).
     CopyName,
+    /// Show the Shell's properties sheet for the selection (OPS-14).
+    ///
+    /// The native menu does not need it — the Shell puts its own `properties` verb in the
+    /// menu — so only the minimal fallback menu offers this command (spec §8.7).
+    Properties,
+    /// Show the Shell's "Open with" dialog for the single selected item (OPS-15).
+    ///
+    /// Same split as [`FerrixCommand::Properties`]: the native menu has the Shell's own
+    /// entry, the fallback menu would otherwise have none.
+    OpenWith,
 }
 
 /// One entry of the Ferrix section: the command and the label shown for it.

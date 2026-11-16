@@ -12,17 +12,20 @@ pub mod drop_target;
 pub mod execute;
 pub mod file_time;
 pub mod icons;
+pub mod properties;
 pub mod recycle;
 pub mod recycle_quota;
 pub mod symlink;
 pub mod volume;
 
 pub use drop_source::{
-    DragOutcome, DragSourceRequest, create_shortcut, run_drag, shortcut_link_path,
+    DragOutcome, DragSourceRequest, create_shortcut, paths_data_object, run_drag,
+    shortcut_link_path,
 };
 pub use drop_target::{
     DragEffect, DragPayload, DropModifiers, DropOutcome, DropSink, OleDropRegistration,
 };
+pub use properties::{PropertiesError, PropertiesMode, open_with, show_properties};
 
 use windows::{
     Win32::{

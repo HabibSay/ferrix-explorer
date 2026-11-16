@@ -696,6 +696,54 @@ impl Orchestrator {
             fx_shell::context_menu::FerrixCommand::CleanEmptyFolders => self.start_clean_scan(),
             fx_shell::context_menu::FerrixCommand::CopyPath => self.copy_selection(false),
             fx_shell::context_menu::FerrixCommand::CopyName => self.copy_selection(true),
+            fx_shell::context_menu::FerrixCommand::Properties => self.on_properties(),
+            fx_shell::context_menu::FerrixCommand::OpenWith => self.on_open_with(),
+        }
+    }
+
+    /// Shows the Shell's properties sheet for the selection (OPS-14).
+    ///
+    /// The selection, or the current folder when nothing is selected — the same rule the
+    /// context menu uses for its background case, so Alt+Enter on an empty list shows the
+    /// folder's sheet rather than nothing. The paths are copied out before the call
+    /// because the sheet is shown on the UI thread and the lock must not be held across
+    /// it. Nothing here is destructive, so no confirmation is asked for.
+    pub fn on_properties(&mut self) {
+        let paths = {
+            let vm = self.view_model.lock().expect("vm lock");
+            let selected = vm.selected_paths();
+            if selected.is_empty() {
+                self.local_folder().into_iter().collect::<Vec<PathBuf>>()
+            } else {
+                selected
+            }
+        };
+        if paths.is_empty() {
+            self.set_status(strings::STATUS_NEEDS_LOCAL_FOLDER.to_string());
+            return;
+        }
+        if let Some(window) = self.window.upgrade() {
+            crate::properties::show_properties(&window, &paths);
+        }
+    }
+
+    /// Shows the Shell's "Open with" dialog for the single selected item (OPS-15).
+    ///
+    /// `OPENASINFO` names one file, so a multi-selection is refused with a status message
+    /// instead of silently picking one of the files.
+    pub fn on_open_with(&mut self) {
+        let selection = {
+            let vm = self.view_model.lock().expect("vm lock");
+            vm.selected_paths()
+        };
+        match selection.as_slice() {
+            [only] => {
+                if let Some(window) = self.window.upgrade() {
+                    crate::properties::open_with(&window, only);
+                }
+            }
+            [] => self.set_status(strings::STATUS_NEEDS_LOCAL_FOLDER.to_string()),
+            _ => self.set_status(strings::STATUS_OPEN_WITH_ONE_FILE.to_string()),
         }
     }
 
@@ -1085,7 +1133,8 @@ impl Orchestrator {
             ShortcutAction::NavigateUp => self.navigate_up(),
             ShortcutAction::Refresh => self.refresh(),
             ShortcutAction::ContextMenu => self.on_context_menu(None),
-            // Properties / FocusAddressBar have no command path yet.
+            ShortcutAction::Properties => self.on_properties(),
+            // FocusAddressBar has no command path yet.
             _ => return false,
         }
         true

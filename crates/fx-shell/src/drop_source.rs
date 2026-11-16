@@ -429,6 +429,20 @@ pub enum DragOutcome {
     Cancelled,
 }
 
+/// An `IDataObject` carrying `CF_HDROP` for `paths`, with no drag around it.
+///
+/// The Shell takes a data object where an array would be natural:
+/// `SHMultiFileProperties` reads the selection to merge from exactly this format, so the
+/// properties sheet reuses the drag source's object instead of building a second one.
+/// The effect is `Copy` because nothing reads it here.
+pub fn paths_data_object(paths: &[PathBuf]) -> IDataObject {
+    DragDataObject {
+        paths: paths.to_vec(),
+        effect: Arc::new(Mutex::new(DragEffect::Copy)),
+    }
+    .into()
+}
+
 /// Runs an OLE drag.
 ///
 /// Blocks until the user drops or cancels, because `DoDragDrop` is a modal pump

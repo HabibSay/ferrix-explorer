@@ -195,6 +195,10 @@ pub const STATUS_NO_EMPTY_FOLDERS: &str = "No empty folders found.";
 /// Status bar: the listing is complete.
 pub const STATUS_DONE: &str = "Done.";
 
+/// "Open with" edits one file's association, so a multi-selection is refused.
+pub const STATUS_OPEN_WITH_ONE_FILE: &str =
+    "Open with works on a single file — select one and try again.";
+
 /// Status bar: a listing is in flight.
 pub const STATUS_LOADING: &str = "Loading\u{2026}";
 

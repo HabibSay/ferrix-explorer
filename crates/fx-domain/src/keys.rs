@@ -180,6 +180,8 @@ pub fn default_shortcuts() -> Vec<(Shortcut, ShortcutAction)> {
         (Shortcut::alt(Key::D), ShortcutAction::FocusAddressBar),
         (Shortcut::ctrl(Key::A), ShortcutAction::SelectAll),
         (Shortcut::shift(Key::F10), ShortcutAction::ContextMenu),
+        // Explorer opens the properties sheet with Alt+Enter (OPS-14).
+        (Shortcut::alt(Key::Enter), ShortcutAction::Properties),
         // Tranche 2 shortcuts
         (Shortcut::ctrl(Key::Z), ShortcutAction::Undo),
         (Shortcut::ctrl(Key::Y), ShortcutAction::Redo),

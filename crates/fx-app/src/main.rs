@@ -16,6 +16,7 @@ mod drag_drop;
 mod operations;
 mod orchestration;
 mod platform_ops;
+mod properties;
 mod shortcuts;
 
 use std::sync::{Arc, Mutex};
@@ -455,7 +456,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// Requires the `raw-window-handle-06` Slint feature and `raw-window-handle = "0.6"`.
 /// The window must have been shown before calling this function.
-fn get_hwnd(window: &ApplicationWindow) -> Result<HWND, Box<dyn std::error::Error>> {
+pub(crate) fn get_hwnd(window: &ApplicationWindow) -> Result<HWND, Box<dyn std::error::Error>> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     // `slint::Window::window_handle()` returns a `slint::WindowHandle` (not a Result).
