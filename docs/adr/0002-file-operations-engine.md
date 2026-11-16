@@ -1,6 +1,6 @@
 # ADR 0002: File-operations engine for Tranche 2 and Tranche 3
 
-- **Status:** Accepted — Tranche 2 engine implemented (Windows validation pending, `docs/tranche-2-validation.md`); the Tranche 3 `IFileOperation` adapter is **not started** — no `IFileOperation` code exists in the tree
+- **Status:** Accepted — Tranche 2 engine implemented (Windows validation pending, `docs/tranche-2-validation.md`); the Tranche 3 `IFileOperation` adapter **implemented** in slice 5 (`docs/tranche-3-validation.md`), manual rows open — see the amendment at the end
 - **Date:** 2026-11-06
 - **Decision owners:** Ferrix maintainers
 - **Related:** `PRD.en.md` 13.4 (operations, activity center), 16.3 Tranche 2 and Tranche 3; `docs/superpowers/specs/2026-11-06-tranche-2-file-operations-design.md`;
@@ -33,3 +33,24 @@ Concretely:
 - **Benefit:** Tranche 3 will deliver OPS-08 (native progress dialog) and OPS-14/OPS-15 (native properties/"Open with") as specified in the PRD.
 - **Risk:** Conformance between the two implementations must be verified when Tranche 3 starts — the adapter must produce identical undo entries and conflict outcomes. Recorded then in `docs/tranche-3-validation.md`.
 - **Risk:** Windows 10 behavior of `IFileOperation` and of the Recycle Bin restore verb is unverified on this host. The restore verb runs through a Shell API that is validated by the slice-2 checklist on Windows 11 first; failure reduces undo scope and is surfaced to the user rather than papered over.
+
+## Amendment (2026-11-16): the adapter exists, and it is routed, not swapped in
+
+Tranche 3 slice 5 implemented the adapter without changing the sequencing this ADR chose: **both**
+engines remain in the tree and a gate picks between them per operation.
+
+- The Tranche 2 loop is still the production path for every operation that needs our own conflict
+dialog, our own progress, pause, or retry.
+- `IFileOperation` runs a clean copy or move — no planned conflict, no reparse point, a probed
+`IFileOperation` available — on an STA worker with the Shell's progress dialog. A conflict that
+appears after the gate ran is left to the Shell's own confirmation (decision 2 of the Tranche 3
+spec), which is the one place this ADR's "our conflict policy" is deliberately relaxed.
+- Conformance is verified rather than assumed (`crates/fx-app/tests/native_conformance.rs`): the same
+move produces the same undo entry through both routes, metadata parity holds with the post-pass, a
+locked source fails the same way on both, and a path past `MAX_PATH` lands on the native route.
+- **Cost realised:** two transfer paths to maintain, plus a post-pass for what the Shell does not
+deliver to us (metadata) and a post-condition check, because the Shell's own verdict is not treated
+as fact (`CLAUDE.md` rule 13). The adapter also cannot pause, so the activity row hides Pause for a
+native transfer instead of offering a button that would lie.
+- **Still open:** the native dialog and the 2 GB acceptance copy have not been observed, and cancel
+mid-run is unproven (`docs/tranche-3-validation.md` rows 6 and 13).

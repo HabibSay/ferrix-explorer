@@ -163,15 +163,87 @@ now compares canonicalised paths, which still asserts the link resolves to that 
 other `fx-shell` test passed on the runner, including the 11 new thumbnail cache tests. The re-run after that repair is CI run **43907907212** on `23470e6`, conclusion
 **success**, every step green including `Run tests` and `Run Clippy`.
 
-**Slice coverage after this pass.** Slices 0-4 have code and are committed. **Slice 5 has no code
-at all**: there is no `crates/fx-shell/src/file_operation.rs`, no native runner in
-`crates/fx-app/src/operations.rs`, and no `crates/fx-app/tests/native_conformance.rs`. The tranche
-therefore **does not meet slice 5's sign-off gate** (spec section 13): OPS-08 — `IFileOperation`
-with the native progress dialog, the 2 GB acceptance criterion (`PRD.md:963`), undo derivation from
-sink pairs and the conformance suite — is entirely unwritten, and no code path calls a native
-transfer route today. Rows 6, 10, 11 and 13 below stay NOT RUN for want of code. The tranche must
-not be reported complete, and a later tranche must not start on this branch (`CLAUDE.md` rule 1)
-until slice 5 lands and the manual rows that need a desktop session are executed.
+## Slice 5 — `IFileOperation` and conformance (2026-11-16)
+
+Gate per spec section 13: "conformance suite green on the runner (CI, pwsh) and locally; manual
+checklist complete on Windows 11; Windows 10 22H2 rows executed or explicitly recorded as open".
+
+| Piece | Where |
+|---|---|
+| `IFileOperation` on an STA worker, sink to events, cancel flag, capability probe | `crates/fx-shell/src/file_operation.rs` |
+| Route gate call site, native runner, undo derivation, metadata post-pass | `crates/fx-app/src/operations.rs` |
+| Destination post-condition and the metadata post-pass, shared with the test | `crates/fx-ops/src/routing.rs` |
+| One undo derivation for both routes | `crates/fx-ops/src/undo.rs` (`move_entry`) |
+| A native row cannot pause, because `IFileOperation` cannot | `crates/fx-app/src/activity.rs`, `crates/fx-ui/src/activity.slint` |
+| Conformance suite | `crates/fx-app/tests/native_conformance.rs` |
+
+**Five defects the conformance suite found; this pass repaired all five.** Four showed up on this
+workstation and one only on the runner; four were product bugs rather than test bugs:
+
+1. **Error UI.** Without `FOF_NOERRORUI`, a locked source left `PerformOperations` waiting on a
+   modal box for the whole 120 s test timeout — the run never finished. Both modes now set
+   `FOF_NOERRORUI` (per-item errors reach the activity center through the sink); the headless mode
+   adds `FOF_SILENT | FOF_NOCONFIRMATION`.
+2. **Verbatim paths.** `SHCreateItemFromParsingName` refuses a `\\?\` path with `E_INVALIDARG`
+   (`0x80070057`) while `std` needs that prefix past `MAX_PATH`. `shell_item` converts to the
+   display form, losslessly (wide-string prefix strip, `\\?\UNC\` included), so the two can
+   coexist.
+3. **The abort flag is not "cancelled".** The Shell sets `GetAnyOperationsAborted` when it *skips*
+   a failed item: the locked-source run aborted while reporting the item failure. Copying that flag
+   into `Cancelled` would have hidden real failures, so the state is derived — a requested cancel
+   wins, and without one an abort is a cancellation only when nothing failed.
+4. **Read-only metadata.** `apply_metadata` opened the destination with write access, which a
+   copied read-only file refuses, so the post-pass failed on exactly the files whose permissions
+   it was copying. Both the `fx-ops` default and `fx_shell::file_time::set_creation_time` now ask
+   for `FILE_WRITE_ATTRIBUTES` — the access `SetFileTime` needs — so a read-only copy is stamped
+   without touching its permissions.
+5. **Undo pairs lost to an 8.3 short name (runner only).** The sink matched the Shell's reported
+   items against the plan by raw string, and on the runner the plan holds
+   `C:\Users\RUNNER~1\...` while the Shell answers `C:\Users\runneradmin\...`: the native move
+   reported **no** undo pair, so the entries differed between routes and Ctrl+Z would have been
+   dead for any user whose path carries a short name. The sink now keys each planned source by
+   its lowercased leaf plus the long form of its parent folder (memoised per folder) and emits
+   the plan's own path, so a native undo entry is the same entry a built-in transfer produces. A
+   unit test asks Windows for the fixture's short name and proves both forms agree — the local
+   temp directory has no short name, which is why only the runner could expose this.
+
+**Conformance coverage, 6/6 on this host:** undo equivalence for the same move through both routes
+plus a real undo from the native entry; metadata parity (modification time and the read-only bit,
+post-pass included); failure parity on a real locked file (`fx_shell::open_locked`, one item
+failure on both routes, never a success); the clean gate choosing native; the conflicting gate
+choosing built-in; and a native copy whose source path exceeds `MAX_PATH` landing correctly.
+
+**Runner validation (2026-11-16).** The slice was pushed at `ce8a94c`; CI run **43917693685** went
+green through formatting, `cargo check`, build and five of the six conformance tests, then failed
+`both_routes_record_the_same_undo_entry_for_a_move` with `left: [("source", "source")]` against
+`right: []` — defect 5 above. After the repair, run **43919161608** on `6a628bf` is **success**,
+every step green, including `Run tests` (with the conformance suite on the runner) and
+`Run Clippy`: the previous branch CI runs of this tranche had failed at `Run tests` before reaching
+Clippy, so this is the first run in which the whole slice is checked on the runner.
+
+**Gates observed locally (2026-11-16).**
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --all -- --check` | **PASS** |
+| `cargo check --workspace --all-targets` | **PASS** |
+| `cargo clippy --workspace --all-targets -- -D warnings` | **PASS**, no suppressions |
+| `cargo deny --offline check` / `cargo audit` | **PASS** offline here (live advisory fetch is unavailable on this host — slice 2 note); the runner runs both live and both are green in run 43919161608 |
+| `cargo test --workspace --all-targets --no-fail-fast`, `TEMP`/`TMP` at `target\tmp` | **PASS**: 305 passed, 0 failed; `fx-settings --lib` and `fx-ui --test keyboard` were refused launch (`os error 5`, the known security layer) and passed on their own, 12/12 and 3/3 |
+
+**What stays manual, and it is not cosmetic:** the native progress dialog and the 2 GB acceptance
+copy (row 6) have never been seen on screen; cancellation mid-run through the sink's `E_ABORT` is
+implemented but unvalidated (rows 6 and 13) because the spike that would have proven the mechanism
+is BLOCKED-ENV; creation-time parity depends on `WindowsPlatformOps::apply_metadata` rather than
+the test port, so row 11 keeps its spot-check; Windows 10 22H2 is unrun (row 14). Pause is absent
+by design on this route (spec section 6) and the activity row hides it.
+
+**Slice coverage.** All six slices now have code. The automated and conformance gates are green
+locally and on the runner (run 43919161608). The manual rows that need a desktop session —
+the dialog, the 2 GB copy, drag-and-drop, the menu, properties, thumbnails on screen, Narrator,
+Windows 10 — remain NOT RUN, so OPS-08's user-visible half is implemented but unobserved. The
+tranche is not to be described as validated on Windows until those rows run, and Tranche 4 must not
+start on this branch before that sign-off (`CLAUDE.md` rule 1).
 
 ## Slice 0 â€” spike findings (spec section 12)
 
@@ -362,14 +434,14 @@ and date on success. Statuses start as NOT RUN unless noted.
 | 3 | A disabled extension disappears (settings blocklist/disable) | settings, then menu | NOT RUN | slice 1 code in place; the blocklist is persisted and honoured at invoke time |
 | 4 | Timeout path shows the minimal Ferrix menu (forced zero budget in a debug build) | debug build | NOT RUN | slice 1 code in place; decision 4 |
 | 5 | Drag Ferrix->Desktop, Ferrix->Explorer, Explorer->Ferrix, multi-select, Ctrl/Shift/Ctrl+Shift, default rule | manual | NOT RUN | slice 2; decision 8 |
-| 6 | 2 GB copy shows the native progress dialog; its cancel works (`PRD.md:963` acceptance) | manual, sized volume | NOT RUN | slice 5 |
+| 6 | 2 GB copy shows the native progress dialog; its cancel works (`PRD.md:963` acceptance) | manual, sized volume | NOT RUN | slice 5 code in place and parented to the window; the dialog has not been observed and the sink's `E_ABORT` path is unproven |
 | 7 | Properties sheet single- and multi-select | manual | NOT RUN | (c) single-select API PASS, sheet itself not observed; multi open |
 | 8 | Open with dialog | manual | NOT RUN | (c) API PASS (modal, 11 292 ms); UI not observed |
 | 9 | Thumbnails appear in the list; second visit served from cache (log proof) | run app | NOT RUN | (d) API PARTIAL |
-| 10 | Native long-path copy (>260) | spike (b) / conformance test | BLOCKED-ENV | spike (b) ready |
-| 11 | Metadata spot-check (mtime, creation, attributes) on a native copy | conformance test | NOT RUN | slice 5 |
+| 10 | Native long-path copy (>260) | conformance test | **PASS** | automated: `a_native_copy_lands_a_path_past_the_legacy_limit`; spike (b) still BLOCKED-ENV, no longer needed for this row |
+| 11 | Metadata spot-check (mtime, creation, attributes) on a native copy | conformance test | **PARTIAL** | automated: mtime and the read-only bit match on both routes; creation time runs through `WindowsPlatformOps::apply_metadata` and is not exercised by the test port, so the spot-check stays open |
 | 12 | Narrator / Accessibility Insights over the menu and activity rows | manual | NOT RUN | slice 1/5, a11y every UI tranche |
-| 13 | Robustness: hung extension, disk full, access denied, cancel mid-copy, race past gate | spec section 15 robustness | NOT RUN | slice 5; spike (b) covers cancel primitive |
+| 13 | Robustness: hung extension, disk full, access denied, cancel mid-copy, race past gate | spec section 15 robustness | NOT RUN | access denied is automated (locked source, both routes); disk full, hung extension and cancel mid-copy stay manual |
 | 14 | Windows 10 22H2 rows | manual | NOT RUN | host is Windows 11 only |
 
 ## Pending spike rows (re-run when the security layer allows)

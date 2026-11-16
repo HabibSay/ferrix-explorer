@@ -7,9 +7,12 @@
   current tranche before changing code.
 - Current tranche: **Tranche 3 — native shell** (`docs/superpowers/specs/2026-11-11-tranche-3-native-shell-design.md`),
   on branch `tranche-3-native-shell`, stacked on `tranche-2-file-operations` until Tranche 2 merges.
-  The module structure was approved 2026-11-11; the spec's section 2 decisions still need the
-  maintainer's answers — no Tranche 3 code until the spec is approved. Tranche 2's automated
-  validation is green (runner run `43042532218`); its manual rows stay open in
+  All six slices have code and both the local and the runner gates are green
+  (`docs/tranche-3-validation.md`), including the native-transfer conformance suite. The tranche is
+  **not signed off**: the manual rows that need a desktop session — the native dialog and its 2 GB
+  copy, drag-and-drop, the menu, properties, thumbnails, Narrator, Windows 10 22H2 — remain NOT
+  RUN. Do not start Tranche 4 on this branch until those rows run and the maintainer signs off.
+  Tranche 2's automated validation is green (runner run `43042532218`); its manual rows stay open in
   `docs/tranche-2-validation.md` and are neither closed nor blocked by Tranche 3.
 - The UI framework is **Slint 1.18.1**, selected in `docs/adr/0001-ui-framework.md`; the iced spike
   stays a benchmark baseline, not product code.
