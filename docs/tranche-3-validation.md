@@ -151,6 +151,17 @@ host with `TEMP`/`TMP` at `target\tmp`.
 | `fx-settings` | 12/12 (retry, see above) |
 | `fx-a11y` | 1/1 |
 
+**Runner validation (2026-11-16).** The branch was pushed at `2fa1bb6`; CI run **43906032028** went
+green through checkout, toolchain, format, workspace check and build, then failed at `Run tests`
+(`Run Clippy` was skipped). The failure was
+`fx-shell` `drop_source::tests::a_shortcut_drop_writes_a_link_that_points_at_its_target`, at the
+last assertion: it compared `C:\Users\runneradmin\...` — what the Shell reads back out of the
+`.lnk` — with `C:\Users\RUNNER~1\...`, which is what `std::env::temp_dir()` returns on that host.
+The same file, in two forms of its name, so the defect was the test's string comparison, not the
+shortcut writer (`recycle.rs:382` already documents this environment for the same reason). The test
+now compares canonicalised paths, which still asserts the link resolves to that exact target. Every
+other `fx-shell` test passed on the runner, including the 11 new thumbnail cache tests.
+
 **Slice coverage after this pass.** Slices 0-4 have code and are committed. **Slice 5 has no code
 at all**: there is no `crates/fx-shell/src/file_operation.rs`, no native runner in
 `crates/fx-app/src/operations.rs`, and no `crates/fx-app/tests/native_conformance.rs`. The tranche

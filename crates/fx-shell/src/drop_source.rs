@@ -655,9 +655,17 @@ mod tests {
         assert_eq!(second, workspace.join("target.txt (2).lnk"));
         create_shortcut(&target, &second).expect("write the second shortcut");
 
-        // The Shell must read the link back as pointing at the original file.
+        // The Shell must read the link back as pointing at the original file. It answers
+        // with the long form of the name, while the environment may have handed us an 8.3
+        // one (`RUNNER~1` on a CI runner), so the two strings legitimately differ for the
+        // same file: compare them the way the filesystem resolves them. Canonicalising
+        // both sides still asserts the link points at this exact target.
         let resolved = read_shortcut(&second).expect("read the link back");
-        assert_eq!(resolved, target);
+        let resolved = resolved
+            .canonicalize()
+            .expect("canonicalise the link target");
+        let expected = target.canonicalize().expect("canonicalise the target");
+        assert_eq!(resolved, expected);
 
         let _ = std::fs::remove_dir_all(&workspace);
     }
