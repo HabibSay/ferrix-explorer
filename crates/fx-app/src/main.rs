@@ -53,10 +53,10 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let _log_guard = init_logging().map_err(|error| {
-        eprintln!("{}{error}", strings::LOGGING_UNAVAILABLE);
-        error
-    })?;
+    // A log that cannot be created must not keep the explorer from opening: measured on this
+    // host, a launch refused here left the previous window on screen and made the new build
+    // look like it had not changed at all.
+    let _log_guard = init_logging();
 
     tracing::info!("Ferrix Explorer starting");
 
@@ -401,17 +401,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let window_weak_ole = window.as_weak();
     let drop_context_ole = drop_context.clone();
-    // Tranche 3 slice 5: the same tick that registers OLE is the first moment the HWND
-    // exists, which is when the native transfer dialog can be given an owner.
+    // Tranche 3 slice 5: the tick that registers OLE is the first moment the HWND exists,
+    // which is when the native transfer dialog can be given an owner.
+    //
+    // One zero-delay tick is not enough: on this host it measured
+    // "Failed to get raw window handle: NotSupported" (log 2026-11-16 17:40), because Slint
+    // materialises the native window inside the event loop. The drop target and the dialog
+    // owner were silently dead while the app looked healthy. Retry briefly instead, then give
+    // up with a warning: a window without a drop target is still usable.
     let orch_owner = orch.clone();
-    let ole_timer = slint::Timer::default();
+    // `slint::Timer` is not `Clone`, so the callback gets its own handle through an `Rc` to
+    // stop itself once the window exists. That leaves one stopped timer alive until the
+    // process exits, which is the price of not waking the event loop every 50 ms forever.
+    let ole_timer = std::rc::Rc::new(slint::Timer::default());
+    let ole_retry = std::rc::Rc::clone(&ole_timer);
+    let ole_attempts = std::cell::Cell::new(0u32);
     ole_timer.start(
-        slint::TimerMode::SingleShot,
-        std::time::Duration::ZERO,
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(50),
         move || {
             let Some(win) = window_weak_ole.upgrade() else {
+                ole_retry.stop();
                 return;
             };
+            let attempts = ole_attempts.get() + 1;
+            ole_attempts.set(attempts);
             // Tranche 3 slice 2: the drop target is the application sink, which owns
             // the policy (modifiers, volume, no-op rule) and hands the work over.
             let host = WindowDropHost {
@@ -426,6 +440,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
             match get_hwnd(&win) {
                 Ok(hwnd) => {
+                    ole_retry.stop();
                     orch_owner
                         .lock()
                         .expect("orchestrator")
@@ -433,12 +448,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     match OleDropRegistration::register(hwnd, Arc::new(sink)) {
                         Ok(reg) => {
                             DROP_REG.with(|cell| *cell.borrow_mut() = Some(reg));
-                            tracing::info!("OLE drop target registered");
+                            tracing::info!(attempts, "OLE drop target registered");
                         }
                         Err(err) => tracing::warn!(%err, "OLE drop target registration failed"),
                     }
                 }
-                Err(err) => tracing::warn!(%err, "Could not obtain HWND for OLE registration"),
+                Err(err) if attempts >= 100 => {
+                    ole_retry.stop();
+                    tracing::warn!(
+                        %err,
+                        attempts,
+                        "Could not obtain HWND for OLE registration; drops stay disabled"
+                    );
+                }
+                Err(_) => {}
             }
         },
     );
@@ -521,32 +544,59 @@ impl DropHost for WindowDropHost {
 
 // ── Logging ────────────────────────────────────────────────────────────────────
 
-fn init_logging() -> std::io::Result<WorkerGuard> {
-    let base_dirs = directories::BaseDirs::new()
-        .ok_or_else(|| std::io::Error::other("LocalAppData could not be resolved"))?;
-    let log_dir = base_dirs
-        .data_local_dir()
-        .join("FerrixExplorer")
-        .join("logs");
-    std::fs::create_dir_all(&log_dir)?;
-
-    let appender = RollingFileAppender::builder()
-        .rotation(Rotation::DAILY)
-        .filename_prefix("ferrix-explorer")
-        .filename_suffix("log")
-        .max_log_files(8)
-        .build(log_dir)
-        .map_err(std::io::Error::other)?;
-    let (writer, guard) = tracing_appender::non_blocking(appender);
+/// Starts logging, preferring the log file and falling back to stderr.
+///
+/// Returns the guard that flushes the file writer; `None` means "stderr only".
+fn init_logging() -> Option<WorkerGuard> {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(writer)
-        .with_ansi(false)
-        .try_init()
-        .map_err(std::io::Error::other)?;
-    Ok(guard)
+
+    let file = directories::BaseDirs::new()
+        .map(|base_dirs| {
+            base_dirs
+                .data_local_dir()
+                .join("FerrixExplorer")
+                .join("logs")
+        })
+        .ok_or_else(|| std::io::Error::other("LocalAppData could not be resolved"))
+        .and_then(|log_dir| {
+            std::fs::create_dir_all(&log_dir)?;
+            RollingFileAppender::builder()
+                .rotation(Rotation::DAILY)
+                .filename_prefix("ferrix-explorer")
+                .filename_suffix("log")
+                .max_log_files(8)
+                .build(log_dir)
+                .map_err(|error| {
+                    std::io::Error::other(format!("failed to create log file: {error}"))
+                })
+        });
+
+    match file {
+        Ok(appender) => {
+            let (writer, guard) = tracing_appender::non_blocking(appender);
+            match tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_writer(writer)
+                .with_ansi(false)
+                .try_init()
+            {
+                Ok(()) => Some(guard),
+                Err(error) => {
+                    eprintln!("Ferrix Explorer could not install the log subscriber: {error}");
+                    None
+                }
+            }
+        }
+        Err(error) => {
+            eprintln!("{}{error}", strings::LOGGING_UNAVAILABLE);
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_writer(std::io::stderr)
+                .try_init();
+            None
+        }
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
