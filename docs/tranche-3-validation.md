@@ -160,7 +160,8 @@ last assertion: it compared `C:\Users\runneradmin\...` — what the Shell reads 
 The same file, in two forms of its name, so the defect was the test's string comparison, not the
 shortcut writer (`recycle.rs:382` already documents this environment for the same reason). The test
 now compares canonicalised paths, which still asserts the link resolves to that exact target. Every
-other `fx-shell` test passed on the runner, including the 11 new thumbnail cache tests.
+other `fx-shell` test passed on the runner, including the 11 new thumbnail cache tests. The re-run after that repair is CI run **43907907212** on `23470e6`, conclusion
+**success**, every step green including `Run tests` and `Run Clippy`.
 
 **Slice coverage after this pass.** Slices 0-4 have code and are committed. **Slice 5 has no code
 at all**: there is no `crates/fx-shell/src/file_operation.rs`, no native runner in
