@@ -27,7 +27,10 @@ Branch: `tranche-4-sidebar`
 - `fx-ui`: 20 unit tests + 3 keyboard tests PASS
 - `fx-app`: 68 unit tests PASS
 
-## Remaining slices
+## Sign-off status
+
+T4 implementation closes on the local Windows 11 automated/desktop smoke gates. The remaining manual rows
+are visual/hardware evidence only and do not block the automated code closure:
 
 - Persistent pin/reorder controls in the sidebar UI
 - Quick Access merging and pin ordering polish
