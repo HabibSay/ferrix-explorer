@@ -12,6 +12,8 @@ Branch: `tranche-4-sidebar`
 - Slint sidebar with accessible list-item names and unavailable state
 - Real logical drives populated in `fx-app`, with callback navigation and 1/100 gauge
 - Window title updated to Ferrix Explorer — Tranche 4
+- Pinned and recent stores loaded in the sidebar; local navigations persist recents
+- Known folders (Home, Desktop, Documents, Downloads, Pictures, Videos, Music) populated when the OS exposes them
 
 ## Gates
 
@@ -23,9 +25,9 @@ Branch: `tranche-4-sidebar`
 
 ## Remaining slices
 
-- Persistent pinned/recent UI and reorder interactions
-- Known folders and Quick Access
-- USB hotplug on open machines
+- Persistent pin/reorder controls in the sidebar UI
+- Quick Access merging and pin ordering polish
+- USB hotplug notifications on open machines
 - Mapped network shares and UNC navigation
 - WSL distributions and Dev Drive detection
 - Treeview and unavailable-location behavior

@@ -23,6 +23,7 @@ mod thumbnails;
 use std::sync::{Arc, Mutex};
 
 use fx_domain::location::Location;
+use fx_settings::sidebar::{PinnedStore, RecentStore};
 use fx_settings::{WindowSize, load_window_size, save_window_size};
 use fx_shell::OleDropRegistration;
 use fx_ui::ApplicationWindow;
@@ -73,33 +74,104 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         size.height as u32,
     ));
 
-    let sidebar_entries: Vec<fx_ui::SidebarEntry> = fx_shell::volume::logical_drive_roots()
-        .into_iter()
-        .map(|root| {
-            let total = fx_shell::volume::get_total_space(&root).ok();
-            let free = fx_shell::volume::get_free_space(&root).ok();
-            let used = match (total, free) {
-                (Some(total), Some(free)) => Some(total.saturating_sub(free)),
-                _ => None,
-            };
-            let gauge_percent = match (used, total) {
-                (Some(used), Some(total)) if total > 0 => used
-                    .saturating_mul(100)
-                    .checked_div(total)
-                    .unwrap_or(0)
-                    .min(100) as i32,
-                _ => 0,
-            };
-            let unavailable = total.is_none() || free.is_none();
-            let label = root.to_string_lossy().into_owned();
-            fx_ui::SidebarEntry {
-                id: SharedString::from(label.clone()),
-                label: SharedString::from(label),
-                unavailable,
-                gauge_percent,
+    let mut sidebar_entries = Vec::<fx_ui::SidebarEntry>::new();
+
+    if let Some(base_dirs) = directories::BaseDirs::new() {
+        let home = base_dirs.home_dir().to_path_buf();
+        if home.exists() {
+            sidebar_entries.push(fx_ui::SidebarEntry {
+                id: SharedString::from(home.to_string_lossy().into_owned()),
+                label: SharedString::from(crate::strings::SIDEBAR_HOME),
+                unavailable: false,
+                gauge_percent: 0,
+            });
+        }
+    }
+
+    if let Some(user_dirs) = directories::UserDirs::new() {
+        let mut push_known_folder = |label: &str, path: Option<&std::path::Path>| {
+            if let Some(path) = path
+                && path.exists()
+            {
+                let id = path.to_string_lossy().into_owned();
+                sidebar_entries.push(fx_ui::SidebarEntry {
+                    id: SharedString::from(id.clone()),
+                    label: SharedString::from(label),
+                    unavailable: false,
+                    gauge_percent: 0,
+                });
             }
-        })
-        .collect();
+        };
+        push_known_folder(crate::strings::SIDEBAR_DESKTOP, user_dirs.desktop_dir());
+        push_known_folder(crate::strings::SIDEBAR_DOCUMENTS, user_dirs.document_dir());
+        push_known_folder(crate::strings::SIDEBAR_DOWNLOADS, user_dirs.download_dir());
+        push_known_folder(crate::strings::SIDEBAR_PICTURES, user_dirs.picture_dir());
+        push_known_folder(crate::strings::SIDEBAR_VIDEOS, user_dirs.video_dir());
+        push_known_folder(crate::strings::SIDEBAR_MUSIC, user_dirs.audio_dir());
+    }
+
+    let pinned = PinnedStore::load().unwrap_or_else(|error| {
+        tracing::warn!(%error, "Could not load pinned sidebar entries");
+        PinnedStore::new_empty()
+    });
+    for path in pinned.locations() {
+        if path.exists() {
+            let label = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| crate::strings::SIDEBAR_PINNED.to_owned());
+            sidebar_entries.push(fx_ui::SidebarEntry {
+                id: SharedString::from(path.to_string_lossy().into_owned()),
+                label: SharedString::from(label),
+                unavailable: false,
+                gauge_percent: 0,
+            });
+        }
+    }
+
+    let recent = RecentStore::load().unwrap_or_else(|error| {
+        tracing::warn!(%error, "Could not load recent sidebar entries");
+        RecentStore::new_empty()
+    });
+    for path in recent.locations() {
+        if path.exists() {
+            let label = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| crate::strings::SIDEBAR_RECENT.to_owned());
+            sidebar_entries.push(fx_ui::SidebarEntry {
+                id: SharedString::from(path.to_string_lossy().into_owned()),
+                label: SharedString::from(format!("{}: {}", crate::strings::SIDEBAR_RECENT, label)),
+                unavailable: false,
+                gauge_percent: 0,
+            });
+        }
+    }
+
+    for root in fx_shell::volume::logical_drive_roots() {
+        let total = fx_shell::volume::get_total_space(&root).ok();
+        let free = fx_shell::volume::get_free_space(&root).ok();
+        let used = match (total, free) {
+            (Some(total), Some(free)) => Some(total.saturating_sub(free)),
+            _ => None,
+        };
+        let gauge_percent = match (used, total) {
+            (Some(used), Some(total)) if total > 0 => used
+                .saturating_mul(100)
+                .checked_div(total)
+                .unwrap_or(0)
+                .min(100) as i32,
+            _ => 0,
+        };
+        let unavailable = total.is_none() || free.is_none();
+        let label = root.to_string_lossy().into_owned();
+        sidebar_entries.push(fx_ui::SidebarEntry {
+            id: SharedString::from(label.clone()),
+            label: SharedString::from(label),
+            unavailable,
+            gauge_percent,
+        });
+    }
     window.set_sidebar_entries(ModelRc::new(VecModel::from(sidebar_entries)));
 
     // Determine initial location: user's home directory, falling back to C:\.

@@ -91,6 +91,74 @@ fn format_pinned(store: &PinnedStore) -> String {
         .collect()
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct RecentStore {
+    locations: Vec<PathBuf>,
+}
+
+impl RecentStore {
+    pub fn new_empty() -> Self {
+        Self::default()
+    }
+
+    pub fn locations(&self) -> &[PathBuf] {
+        &self.locations
+    }
+
+    pub fn touch(&mut self, location: PathBuf) {
+        self.locations.retain(|existing| existing != &location);
+        self.locations.insert(0, location);
+        self.locations.truncate(10);
+    }
+
+    pub fn load() -> io::Result<Self> {
+        let path = recent_path()?;
+        let contents = match fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::new_empty()),
+            Err(error) => return Err(error),
+        };
+        Ok(parse_recent(&contents))
+    }
+
+    pub fn save(&self) -> io::Result<()> {
+        let path = recent_path()?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::other("recent sidebar path has no parent"))?;
+        fs::create_dir_all(parent)?;
+        fs::write(path, format_recent(self))
+    }
+}
+
+fn recent_path() -> io::Result<PathBuf> {
+    let base_dirs = directories::BaseDirs::new()
+        .ok_or_else(|| io::Error::other("AppData could not be resolved"))?;
+    Ok(base_dirs
+        .config_dir()
+        .join("FerrixExplorer")
+        .join("recent_sidebar.ini"))
+}
+
+fn parse_recent(contents: &str) -> RecentStore {
+    let locations = contents
+        .lines()
+        .filter_map(|line| line.strip_prefix("recent="))
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .take(10)
+        .collect();
+    RecentStore { locations }
+}
+
+fn format_recent(store: &RecentStore) -> String {
+    store
+        .locations
+        .iter()
+        .map(|location| format!("recent={}\n", location.to_string_lossy()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,6 +202,40 @@ mod tests {
         assert!(store.pin(PathBuf::from("C\\Users")));
         assert!(!store.pin(PathBuf::from("C\\Users")));
         assert_eq!(store.locations().len(), 1);
+    }
+
+    #[test]
+    fn recent_locations_move_to_front_and_remove_duplicates() {
+        let mut store = RecentStore::new_empty();
+        store.touch(PathBuf::from("C\\One"));
+        store.touch(PathBuf::from("C\\Two"));
+        store.touch(PathBuf::from("C\\One"));
+
+        assert_eq!(
+            store.locations(),
+            &[PathBuf::from("C\\One"), PathBuf::from("C\\Two")]
+        );
+    }
+
+    #[test]
+    fn recent_locations_are_capped_at_ten() {
+        let mut store = RecentStore::new_empty();
+        for index in 0..12 {
+            store.touch(PathBuf::from(format!("C\\Folder{index}")));
+        }
+
+        assert_eq!(store.locations().len(), 10);
+        assert_eq!(store.locations()[0], PathBuf::from("C\\Folder11"));
+    }
+
+    #[test]
+    fn recent_serialization_round_trips_in_order() {
+        let mut store = RecentStore::new_empty();
+        store.touch(PathBuf::from("C\\One"));
+        store.touch(PathBuf::from("C\\Two"));
+
+        let parsed = parse_recent(&format_recent(&store));
+        assert_eq!(parsed, store);
     }
 
     #[test]

@@ -10,6 +10,7 @@ use fx_domain::{
 };
 use fx_fs::listing::{ListingBatch, ListingError, list_directory};
 use fx_fs::watch::{LocationWatcher, NotifyWatcher, WatchEvent};
+use fx_settings::sidebar::RecentStore;
 use fx_settings::view_state::{MenuExtensionState, ViewStateStore};
 use fx_shell::clipboard::ClipboardEffect;
 use fx_ui::ApplicationWindow;
@@ -42,6 +43,8 @@ pub struct Orchestrator {
     view_state: ViewStateStore,
     /// Which shell extensions are blocked, and whether the native menu is used at all.
     menu_extensions: MenuExtensionState,
+    /// Recent local folders shown in the T4 sidebar.
+    recent: RecentStore,
     /// Tokio runtime for listing tasks.
     runtime: Runtime,
     /// Token for the most-recent listing; cancelled on every new navigation.
@@ -137,6 +140,10 @@ impl Orchestrator {
             tracing::warn!(%err, "Could not load the menu extension state; using defaults");
             MenuExtensionState::default()
         });
+        let recent = RecentStore::load().unwrap_or_else(|err| {
+            tracing::warn!(%err, "Could not load recent sidebar entries; using defaults");
+            RecentStore::new_empty()
+        });
 
         let port = Arc::new(WindowsPlatformOps);
         // Tranche 3 slice 5: probe once whether the Shell's operation object exists here.
@@ -171,6 +178,7 @@ impl Orchestrator {
             history: NavigationHistory::new(initial_location.clone()),
             view_state,
             menu_extensions,
+            recent,
             runtime,
             cancel: CancellationToken::new(),
             generation: 0,
@@ -244,6 +252,12 @@ impl Orchestrator {
 
     /// Navigate to an arbitrary location (e.g. from the address bar).
     pub fn navigate_to(&mut self, location: Location) {
+        if let Location::Local(path) = &location {
+            self.recent.touch(path.clone());
+            if let Err(error) = self.recent.save() {
+                tracing::warn!(%error, "Could not persist recent sidebar entries");
+            }
+        }
         self.history.navigate(location.clone());
         self.start_listing(location);
     }

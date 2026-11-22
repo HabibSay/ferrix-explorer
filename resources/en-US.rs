@@ -6,6 +6,17 @@
 /// Caption of the top-level window. Also used as the window's UI Automation name.
 pub const APP_TITLE: &str = "Ferrix Explorer — Tranche 4";
 
+/// Sidebar labels for known folders and pinned navigation.
+pub const SIDEBAR_HOME: &str = "Home";
+pub const SIDEBAR_DESKTOP: &str = "Desktop";
+pub const SIDEBAR_DOCUMENTS: &str = "Documents";
+pub const SIDEBAR_DOWNLOADS: &str = "Downloads";
+pub const SIDEBAR_PICTURES: &str = "Pictures";
+pub const SIDEBAR_VIDEOS: &str = "Videos";
+pub const SIDEBAR_MUSIC: &str = "Music";
+pub const SIDEBAR_PINNED: &str = "Pinned";
+pub const SIDEBAR_RECENT: &str = "Recent";
+
 /// Label of the app-local `IContextMenu` command.
 pub const ABOUT_MENU_LABEL: &str = "About Ferrix";
 
