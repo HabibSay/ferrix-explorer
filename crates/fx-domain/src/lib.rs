@@ -7,4 +7,5 @@ pub mod filter;
 pub mod history;
 pub mod keys;
 pub mod location;
+pub mod sidebar;
 pub mod view;

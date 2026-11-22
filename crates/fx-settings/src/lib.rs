@@ -6,6 +6,7 @@
 
 use std::{fs, io, path::PathBuf};
 
+pub mod sidebar;
 pub mod view_state;
 
 const DEFAULT_WIDTH: i32 = 1100;

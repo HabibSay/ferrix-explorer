@@ -1,0 +1,58 @@
+import { ListView } from "std-widgets.slint";
+
+export struct SidebarEntry {
+    id: string,
+    label: string,
+    unavailable: bool,
+    gauge-percent: int,
+}
+
+export component Sidebar inherits Rectangle {
+    in property <[SidebarEntry]> entries: [];
+    callback entry-selected(string);
+
+    width: 180px;
+    background: #f3f3f3;
+    border-width: 1px;
+    border-color: #d9d9d9;
+
+    accessible-role: list;
+
+    ListView {
+        for entry[i] in entries: Rectangle {
+            height: 32px;
+            opacity: entry.unavailable ? 0.65 : 1.0;
+
+            accessible-role: list-item;
+            accessible-label: entry.label + (entry.unavailable ? ", unavailable" : "");
+            accessible-action-default => { entry-selected(entry.id); }
+
+            TouchArea {
+                clicked => { root.entry-selected(entry.id); }
+            }
+
+            VerticalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 2px;
+
+                Text {
+                    text: entry.label;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+
+                if entry.gauge-percent > 0: Rectangle {
+                    height: 3px;
+                    background: #d9d9d9;
+
+                    Rectangle {
+                        width: parent.width * entry.gauge-percent / 100;
+                        height: parent.height;
+                        background: #0078d7;
+                    }
+                }
+            }
+        }
+    }
+}

@@ -2,6 +2,7 @@ import { ListView } from "std-widgets.slint";
 import { Strings } from "resources/en-US.slint";
 import { ConflictDialog, DeleteConfirmation, PatternSelection, ChecksumSheet, ChecksumRow } from "dialogs.slint";
 import { ActivityCenter, ActivityRow } from "activity.slint";
+import { Sidebar, SidebarEntry } from "sidebar.slint";
 
 // Represents a single file entry in the list.
 struct FileRow {
@@ -570,6 +571,9 @@ export component ApplicationWindow inherits Window {
     in property <[string]> subfolder-items: [];
     in-out property <bool> subfolder-menu-visible: false;
 
+    // Tranche 4: Sidebar and drives.
+    in property <[SidebarEntry]> sidebar-entries: [];
+
     // Tranche 2: enriched status bar properties
     in property <string> status-item-count: "";
     in property <string> status-selected-count: "";
@@ -631,6 +635,7 @@ export component ApplicationWindow inherits Window {
     callback address-bar-confirmed(string);
     callback breadcrumb-segment-clicked(int);
     callback subfolder-item-selected(string);
+    callback sidebar-entry-selected(string);
     callback context-menu-requested(int, length, length);
     // History navigation
     callback navigate-back();
@@ -719,52 +724,65 @@ export component ApplicationWindow inherits Window {
                 subfolder-item-selected(label) => { root.subfolder-item-selected(label); }
             }
 
-            // Column headers
-            DetailsTable {
-                columns: root.columns;
-                sort-by-column(i) => { root.sort-by-column(i); }
-                column-resize-requested(col-index, new-width) => {
-                    root.column-resize-requested(col-index, new-width);
-                }
-                column-reorder-requested(from-index, to-index) => {
-                    root.column-reorder-requested(from-index, to-index);
-                }
-            }
-
-            // Virtualized file list
-            file-list-area := Rectangle {
+            HorizontalLayout {
                 vertical-stretch: 1;
 
-                FileList {
-                    width: 100%;
-                    height: 100%;
-                    rows: root.rows;
-                    row-activated(id) => { root.row-activated(id); }
-                    row-selected(id, ctrl, shift) => {
-                        // The row's TouchArea absorbs the press; take keyboard focus
-                        // explicitly so file shortcuts work after clicking a row.
-                        main-scope.focus();
-                        root.row-selected(id, ctrl, shift);
+                Sidebar {
+                    entries: root.sidebar-entries;
+                    entry-selected(id) => { root.sidebar-entry-selected(id); }
+                }
+
+                VerticalLayout {
+                    vertical-stretch: 1;
+
+                    // Column headers
+                    DetailsTable {
+                        columns: root.columns;
+                        sort-by-column(i) => { root.sort-by-column(i); }
+                        column-resize-requested(col-index, new-width) => {
+                            root.column-resize-requested(col-index, new-width);
+                        }
+                        column-reorder-requested(from-index, to-index) => {
+                            root.column-reorder-requested(from-index, to-index);
+                        }
                     }
-                    context-menu-requested(id, x, y) => { root.context-menu-requested(id, x, y); }
-                    drag-started(id) => { root.row-drag-started(id); }
-                    geometry-changed => {
-                        root.list-geometry-changed(self.viewport-top, self.viewport-height,
-                            self.row-height, self.scroll-offset);
-                    }
-                    rename-target-id: root.status-rename-target-id;
-                    rename-seed-text: root.rename-seed-text;
-                    rename-seed-selection: root.rename-seed-selection;
-                    rename-committed(id, text) => {
-                        root.rename-committed(id, text);
-                        main-scope.focus();
-                    }
-                    rename-cancelled(id) => {
-                        root.rename-cancelled(id);
-                        main-scope.focus();
-                    }
-                    rename-validate(text) => {
-                        return root.rename-validate(text);
+
+                    // Virtualized file list
+                    file-list-area := Rectangle {
+                        vertical-stretch: 1;
+
+                        FileList {
+                            width: 100%;
+                            height: 100%;
+                            rows: root.rows;
+                            row-activated(id) => { root.row-activated(id); }
+                            row-selected(id, ctrl, shift) => {
+                                // The row's TouchArea absorbs the press; take keyboard focus
+                                // explicitly so file shortcuts work after clicking a row.
+                                main-scope.focus();
+                                root.row-selected(id, ctrl, shift);
+                            }
+                            context-menu-requested(id, x, y) => { root.context-menu-requested(id, x, y); }
+                            drag-started(id) => { root.row-drag-started(id); }
+                            geometry-changed => {
+                                root.list-geometry-changed(self.viewport-top, self.viewport-height,
+                                    self.row-height, self.scroll-offset);
+                            }
+                            rename-target-id: root.status-rename-target-id;
+                            rename-seed-text: root.rename-seed-text;
+                            rename-seed-selection: root.rename-seed-selection;
+                            rename-committed(id, text) => {
+                                root.rename-committed(id, text);
+                                main-scope.focus();
+                            }
+                            rename-cancelled(id) => {
+                                root.rename-cancelled(id);
+                                main-scope.focus();
+                            }
+                            rename-validate(text) => {
+                                return root.rename-validate(text);
+                            }
+                        }
                     }
                 }
             }

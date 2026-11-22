@@ -100,8 +100,18 @@ fn ctrl_c_and_delete_reach_the_host() {
     window.on_row_selected(move |id, _ctrl, _shift| {
         click_recorder.borrow_mut().push(id);
     });
-    // Click the first row: the list starts below address (30) + breadcrumb (28) + header (28).
-    click(&window, 100.0, 95.0);
+    // Click the first row in the details area, to the right of the T4 sidebar.
+    for y in [86.0, 98.0, 110.0, 122.0, 134.0] {
+        for x in [220.0, 260.0, 300.0, 400.0, 500.0] {
+            click(&window, x, y);
+            if !clicks.borrow().is_empty() {
+                break;
+            }
+        }
+        if !clicks.borrow().is_empty() {
+            break;
+        }
+    }
     assert_eq!(
         clicks.borrow().as_slice(),
         &[1],

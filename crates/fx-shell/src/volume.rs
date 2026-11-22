@@ -4,12 +4,15 @@
 //! The adapter in `fx-app/src/platform_ops.rs` converts between the local `VolumeKind`
 //! defined here and `fx_ops::port::VolumeKind`.
 
-use std::{io, path::Path};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
 use windows::{
     Win32::Storage::FileSystem::{
-        GetDiskFreeSpaceExW, GetDriveTypeW, GetVolumeInformationW, REPLACEFILE_IGNORE_MERGE_ERRORS,
-        ReplaceFileW,
+        GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
+        REPLACEFILE_IGNORE_MERGE_ERRORS, ReplaceFileW,
     },
     core::PCWSTR,
 };
@@ -106,6 +109,33 @@ pub fn get_free_space(path: &Path) -> io::Result<u64> {
     Ok(available_to_caller)
 }
 
+/// Returns total bytes on the volume holding `path`.
+pub fn get_total_space(path: &Path) -> io::Result<u64> {
+    let root = volume_root(path)?;
+    let root_wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut total: u64 = 0;
+
+    // SAFETY: root_wide is NUL-terminated; total is a live output pointer.
+    unsafe { GetDiskFreeSpaceExW(PCWSTR(root_wide.as_ptr()), None, Some(&mut total), None) }
+        .map_err(io::Error::from)?;
+    Ok(total)
+}
+
+/// Returns all currently mounted drive-letter roots, for example `C:\\`.
+pub fn logical_drive_roots() -> Vec<PathBuf> {
+    // SAFETY: GetLogicalDrives is stateless and returns a bitmask of mounted roots.
+    let mask = unsafe { GetLogicalDrives() };
+    (b'A'..=b'Z')
+        .enumerate()
+        .filter_map(|(index, letter)| {
+            if mask & (1u32 << index) == 0 {
+                return None;
+            }
+            Some(PathBuf::from(format!("{}:\\", letter as char)))
+        })
+        .collect()
+}
+
 /// Atomically replaces `destination` with `replacement` using `ReplaceFileW`.
 ///
 /// If `destination` does not exist, falls back to `std::fs::rename` (which is atomic on
@@ -172,5 +202,34 @@ pub(crate) fn volume_root(path: &Path) -> io::Result<String> {
                 "cannot determine volume root from relative path",
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn logical_drive_roots_are_deterministic() {
+        let roots = logical_drive_roots();
+        assert!(
+            roots
+                .iter()
+                .all(|root| root.to_string_lossy().ends_with(":\\"))
+        );
+    }
+
+    #[test]
+    fn total_space_is_at_least_free_space() {
+        let root = std::env::temp_dir();
+        if let (Ok(total), Ok(free)) = (get_total_space(&root), get_free_space(&root)) {
+            assert!(total >= free);
+        }
+    }
+
+    #[test]
+    fn current_directory_has_a_volume_kind() {
+        let _ = get_volume_kind(&PathBuf::from("C:\\"));
     }
 }

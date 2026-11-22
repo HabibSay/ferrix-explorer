@@ -27,7 +27,7 @@ use fx_settings::{WindowSize, load_window_size, save_window_size};
 use fx_shell::OleDropRegistration;
 use fx_ui::ApplicationWindow;
 use orchestration::Orchestrator;
-use slint::{ComponentHandle, Model};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tracing_appender::{
     non_blocking::WorkerGuard,
     rolling::{RollingFileAppender, Rotation},
@@ -72,6 +72,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         size.width as u32,
         size.height as u32,
     ));
+
+    let sidebar_entries: Vec<fx_ui::SidebarEntry> = fx_shell::volume::logical_drive_roots()
+        .into_iter()
+        .map(|root| {
+            let total = fx_shell::volume::get_total_space(&root).ok();
+            let free = fx_shell::volume::get_free_space(&root).ok();
+            let used = match (total, free) {
+                (Some(total), Some(free)) => Some(total.saturating_sub(free)),
+                _ => None,
+            };
+            let gauge_percent = match (used, total) {
+                (Some(used), Some(total)) if total > 0 => used
+                    .saturating_mul(100)
+                    .checked_div(total)
+                    .unwrap_or(0)
+                    .min(100) as i32,
+                _ => 0,
+            };
+            let unavailable = total.is_none() || free.is_none();
+            let label = root.to_string_lossy().into_owned();
+            fx_ui::SidebarEntry {
+                id: SharedString::from(label.clone()),
+                label: SharedString::from(label),
+                unavailable,
+                gauge_percent,
+            }
+        })
+        .collect();
+    window.set_sidebar_entries(ModelRc::new(VecModel::from(sidebar_entries)));
 
     // Determine initial location: user's home directory, falling back to C:\.
     let initial_location = {
@@ -120,6 +149,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let orch_addr = orch.clone();
         win.on_address_bar_confirmed(move |text| {
             orch_addr.lock().unwrap().navigate_to_path(&text);
+        });
+
+        let orch_sidebar = orch.clone();
+        win.on_sidebar_entry_selected(move |id| {
+            orch_sidebar
+                .lock()
+                .unwrap()
+                .navigate_to(Location::Local(std::path::PathBuf::from(id.as_str())));
         });
 
         let orch_act = orch.clone();
