@@ -2,12 +2,12 @@
 version = 2
 yanked = "deny"
 ignore = [
+    # Pre-existing: chrono is unmaintained (transitive via Slint dependencies)
+    "RUSTSEC-2026-0543",
     # Pre-existing: paste crate is unmaintained (transitive via Slint/iced dependencies)
     "RUSTSEC-2024-0436",
     # Pre-existing: pin-utils is unmaintained (transitive via Slint/iced dependencies)
     "RUSTSEC-2026-0441",
-    # Pre-existing: ttf-parser is unmaintained (transitive via Slint/iced dependencies)
-    "RUSTSEC-2026-0433",
     # Pre-existing: zbus_names is unmaintained (transitive via Slint/iced dependencies)
     "RUSTSEC-2026-0192",
     # Pre-existing: zvariant is unmaintained (transitive via Slint/iced dependencies)

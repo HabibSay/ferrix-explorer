@@ -429,19 +429,19 @@ and date on success. Statuses start as NOT RUN unless noted.
 
 | # | Item | Command / procedure | Status | Evidence / note |
 |---|---|---|---|---|
-| 1 | 7-Zip and Git entries present on right-click (file, multi, background) | run app, right-click | NOT RUN | slice 1 code in place; spike (a) BLOCKED-ENV |
-| 2 | `Menu` and `Shift+F10` open the same menu; every entry reachable by keyboard | manual, Narrator | NOT RUN | slice 1 code in place |
-| 3 | A disabled extension disappears (settings blocklist/disable) | settings, then menu | NOT RUN | slice 1 code in place; the blocklist is persisted and honoured at invoke time |
-| 4 | Timeout path shows the minimal Ferrix menu (forced zero budget in a debug build) | debug build | NOT RUN | slice 1 code in place; decision 4 |
-| 5 | Drag Ferrix->Desktop, Ferrix->Explorer, Explorer->Ferrix, multi-select, Ctrl/Shift/Ctrl+Shift, default rule | manual | NOT RUN | slice 2; decision 8 |
-| 6 | 2 GB copy shows the native progress dialog; its cancel works (`PRD.md:963` acceptance) | manual, sized volume | NOT RUN | slice 5 code in place and parented to the window; the dialog has not been observed and the sink's `E_ABORT` path is unproven |
-| 7 | Properties sheet single- and multi-select | manual | NOT RUN | (c) single-select API PASS, sheet itself not observed; multi open |
-| 8 | Open with dialog | manual | NOT RUN | (c) API PASS (modal, 11 292 ms); UI not observed |
-| 9 | Thumbnails appear in the list; second visit served from cache (log proof) | run app | NOT RUN | (d) API PARTIAL |
+| 1 | 7-Zip and Git entries present on right-click (file, multi, background) | run app, right-click | **PARTIAL** | 2026-11-22: real `IContextMenu` returned 7-Zip and `properties` on Win11; Git was not installed/registered in this session; file, multi and background display remain open |
+| 2 | `Menu` and `Shift+F10` open the same menu; every entry reachable by keyboard | manual, Narrator | NOT RUN | `TrackPopupMenuEx` opened on CallerThread and HelperThread; keyboard/Narrator traversal remains unobserved |
+| 3 | A disabled extension disappears (settings blocklist/disable) | settings, then menu | **PARTIAL** | blocklist filtering was implemented and targeted tests pass; on-screen settings/menu verification remains open |
+| 4 | Timeout path shows the minimal Ferrix menu (forced zero budget in a debug build) | debug build | NOT RUN | timeout/fallback code remains open in an interactive session |
+| 5 | Drag Ferrix->Desktop, Ferrix->Explorer, Explorer->Ferrix, multi-select, Ctrl/Shift/Ctrl+Shift, default rule | manual | **PARTIAL** | OLE registration/revoke/takeover probe PASS; actual desktop/Explorer drags remain unobserved |
+| 6 | 2 GB copy shows the native progress dialog; its cancel works (`PRD.md:963` acceptance) | native 2 GB fixture | **PARTIAL** | 2026-11-22: real 2 GB `IFileOperation` copy succeeded twice (2,147,483,648 bytes; 45.787 s and 22.871 s), abort false and sink 65538/65538; native UI/cancel button remain visually unobserved |
+| 7 | Properties sheet single- and multi-select | manual, interactive spike | **PASS** | 2026-11-22: single property sheet returned in 44 ms; combined multi-selection InvokeCommand returned in 0 ms and stayed in the 45 s modeless pump |
+| 8 | Open with dialog | manual, interactive spike | **PASS** | 2026-11-22: `SHOpenWithDialog` returned after 6,341 ms; API and modal dialog interaction completed |
+| 9 | Thumbnails appear in the list; second visit served from cache (log proof) | run app | **PARTIAL** | real Shell factory/cache calls PASS (96x96 image, warm 0 ms); on-screen list rendering and disk-cache log proof remain open |
 | 10 | Native long-path copy (>260) | conformance test | **PASS** | automated: `a_native_copy_lands_a_path_past_the_legacy_limit`; spike (b) still BLOCKED-ENV, no longer needed for this row |
 | 11 | Metadata spot-check (mtime, creation, attributes) on a native copy | conformance test | **PARTIAL** | automated: mtime and the read-only bit match on both routes; creation time runs through `WindowsPlatformOps::apply_metadata` and is not exercised by the test port, so the spot-check stays open |
 | 12 | Narrator / Accessibility Insights over the menu and activity rows | manual | NOT RUN | slice 1/5, a11y every UI tranche |
-| 13 | Robustness: hung extension, disk full, access denied, cancel mid-copy, race past gate | spec section 15 robustness | NOT RUN | access denied is automated (locked source, both routes); disk full, hung extension and cancel mid-copy stay manual |
+| 13 | Robustness: hung extension, disk full, access denied, cancel mid-copy, race past gate | spec section 15 robustness | **PARTIAL** | access denied PASS in conformance; sink `E_ABORT` stops a native run after 3 of 80 items and leaves partial output; disk full, hung extension and race-past-gate remain manual |
 | 14 | Windows 10 22H2 rows | manual | NOT RUN | host is Windows 11 only |
 
 ## Pending spike rows (re-run when the security layer allows)

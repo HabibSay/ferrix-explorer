@@ -11,7 +11,7 @@ use std::{
     os::windows::{ffi::OsStrExt, io::AsRawHandle},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU32, Ordering},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use windows::{
@@ -47,6 +47,20 @@ fn main() {
         "move" => vec![test_move_tree_unicode()],
         "longpath" => vec![test_long_path()],
         "cancel" => vec![test_cancel()],
+        "large" => {
+            let source = std::env::args().nth(2).map(PathBuf::from);
+            let destination = std::env::args().nth(3).map(PathBuf::from);
+            match (source, destination) {
+                (Some(source), Some(destination)) => vec![test_large_copy(source, destination)],
+                _ => {
+                    eprintln!("usage: spike_fileop large <source-file> <destination-dir>");
+                    vec![Err(windows::core::Error::new(
+                        windows::core::HRESULT(0x8007_0000u32 as i32),
+                        "missing source or destination",
+                    ))]
+                }
+            }
+        }
         _ => vec![
             test_copy_metadata(),
             test_move_tree_unicode(),
@@ -364,6 +378,62 @@ fn spike_root(tag: &str) -> PathBuf {
 }
 
 // ---------------------------------------------------------------- tests
+
+fn test_large_copy(source: PathBuf, destination: PathBuf) -> WinResult<()> {
+    println!("=== TEST large_native_copy ===");
+    let source_len = fs::metadata(&source)?.len();
+    fs::create_dir_all(&destination).map_err(|error| {
+        windows::core::Error::new(
+            windows::core::HRESULT(error.raw_os_error().unwrap_or_default()),
+            error.to_string(),
+        )
+    })?;
+
+    let op: IFileOperation = unsafe { CoCreateInstance(&CLSID_FILE_OPERATION, None, CLSCTX_ALL)? };
+    unsafe { op.SetOperationFlags(windows::Win32::UI::Shell::FOF_NOERRORUI)? };
+    let sink: IFileOperationProgressSink = SpikeSink::new(0).into();
+    let cookie = unsafe { op.Advise(&sink)? };
+    let source_item = shell_item(&source)?;
+    let destination_item = shell_item(&destination)?;
+    let name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("large.bin");
+    let name_w = wide(Path::new(name));
+    let started = Instant::now();
+    unsafe {
+        op.CopyItem(
+            &source_item,
+            &destination_item,
+            PCWSTR(name_w.as_ptr()),
+            None,
+        )?
+    };
+    let perform = unsafe { op.PerformOperations() };
+    let elapsed = started.elapsed();
+    let aborted = unsafe { op.GetAnyOperationsAborted().unwrap_or_default() };
+    unsafe { op.Unadvise(cookie)? };
+
+    let output = destination.join(name);
+    let output_len = fs::metadata(&output)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    println!("  source_len={source_len} output_len={output_len}");
+    println!("  PerformOperations={perform:?} elapsed={elapsed:?} aborted={aborted:?}");
+    println!(
+        "FINDING | large_native_copy: perform={perform:?} elapsed_ms={} source_len={source_len} output_len={output_len} aborted={aborted:?}",
+        elapsed.as_millis()
+    );
+
+    if perform.is_err() || aborted.as_bool() || output_len != source_len {
+        Err(windows::core::Error::new(
+            windows::core::HRESULT(0x8000_4005_u32 as i32),
+            "native copy did not complete with the requested length",
+        ))
+    } else {
+        Ok(())
+    }
+}
 
 /// Copy one file; compare creation time, last-write time and attributes (decision 9 / rule 7).
 fn test_copy_metadata() -> WinResult<()> {

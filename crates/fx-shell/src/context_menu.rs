@@ -35,8 +35,9 @@ use windows::Win32::UI::Shell::{
     SHGetDesktopFolder,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, GetMenuItemCount, IsWindow, MF_SEPARATOR, MF_STRING,
-    TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenuEx,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, GetMenuItemCount, GetMenuItemID, HMENU, IsWindow,
+    MF_BYPOSITION, MF_SEPARATOR, MF_STRING, RemoveMenu, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    TrackPopupMenuEx,
 };
 use windows::core::{HRESULT, PCSTR, PCWSTR, PSTR};
 
@@ -319,6 +320,12 @@ fn run_menu(
         return Err(MenuError::QueryFailed(hr));
     }
 
+    // SAFETY: the HMENU is live and owned by this thread; positions are queried
+    // before removal and iterated from the end so each removal is stable.
+    unsafe {
+        remove_blocked_entries(menu, &shell_menu, &request.blocked_verbs);
+    }
+
     // The Ferrix section is appended after the Shell's own entries, separated from
     // them. Its ids live outside the Shell's range, so no label can collide with a verb.
     if !request.ferrix_items.is_empty() {
@@ -416,6 +423,29 @@ fn run_menu(
 }
 
 /// Turns the id TrackPopupMenuEx returned into an outcome.
+unsafe fn remove_blocked_entries(menu: HMENU, shell_menu: &IContextMenu, blocked_verbs: &[String]) {
+    // SAFETY: the popup is live and owned by this thread for the full function.
+    let item_count = unsafe { GetMenuItemCount(Some(menu)) };
+    for position in (0..item_count).rev() {
+        // SAFETY: position is a live position returned by GetMenuItemCount.
+        let id = unsafe { GetMenuItemID(menu, position) } as i64;
+        if id < SHELL_ID_FIRST as i64 || id > SHELL_ID_LAST as i64 {
+            continue;
+        }
+
+        let offset = (id as u32 - SHELL_ID_FIRST) as usize;
+        // SAFETY: the live Shell menu remains valid and offset came from an owned item id.
+        let verb = unsafe { command_verb(shell_menu, offset) };
+        if blocked_verbs
+            .iter()
+            .any(|blocked| blocked.eq_ignore_ascii_case(&verb))
+        {
+            // SAFETY: iterating from the end keeps later positions stable; RemoveMenu owns no COM object.
+            let _ = unsafe { RemoveMenu(menu, position as u32, MF_BYPOSITION) };
+        }
+    }
+}
+
 fn resolve(
     chosen: u32,
     request: &MenuRequest,
