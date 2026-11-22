@@ -1722,6 +1722,7 @@ dependencies = [
  "fx-a11y",
  "fx-domain",
  "fx-fs",
+ "fx-network",
  "fx-ops",
  "fx-settings",
  "fx-shell",

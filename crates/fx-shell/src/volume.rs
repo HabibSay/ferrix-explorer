@@ -32,6 +32,35 @@ pub enum VolumeKind {
 /// Returns the volume serial number for the volume holding `path`.
 ///
 /// Calls `GetVolumeInformationW` on the root of the path, which must be reachable.
+pub fn is_dev_drive(path: &Path) -> bool {
+    get_volume_filesystem(path).is_ok_and(|filesystem| filesystem.eq_ignore_ascii_case("ReFS"))
+}
+
+pub fn get_volume_filesystem(path: &Path) -> io::Result<String> {
+    let root = volume_root(path)?;
+    let root_wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut filesystem = [0u16; 32];
+
+    // SAFETY: root_wide and filesystem output storage stay alive for the call.
+    let ok = unsafe {
+        GetVolumeInformationW(
+            PCWSTR(root_wide.as_ptr()),
+            None,
+            None,
+            None,
+            None,
+            Some(&mut filesystem),
+        )
+    };
+    ok.map_err(io::Error::from)?;
+    Ok(String::from_utf16_lossy(
+        &filesystem[..filesystem
+            .iter()
+            .position(|character| *character == 0)
+            .unwrap_or(filesystem.len())],
+    ))
+}
+
 pub fn get_volume_serial(path: &Path) -> io::Result<u64> {
     let root = volume_root(path)?;
     let root_wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
@@ -209,6 +238,12 @@ pub(crate) fn volume_root(path: &Path) -> io::Result<String> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn refs_is_the_dev_drive_filesystem() {
+        assert!("ReFS".eq_ignore_ascii_case("refs"));
+        assert!(!"NTFS".eq_ignore_ascii_case("refs"));
+    }
 
     #[test]
     fn logical_drive_roots_are_deterministic() {

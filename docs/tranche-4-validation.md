@@ -14,12 +14,16 @@ Branch: `tranche-4-sidebar`
 - Window title updated to Ferrix Explorer — Tranche 4
 - Pinned and recent stores loaded in the sidebar; local navigations persist recents
 - Known folders (Home, Desktop, Documents, Downloads, Pictures, Videos, Music) populated when the OS exposes them
+- Logical-drive sidebar refreshes every second for removable USB insertion/removal
+- Network and WSL discovery runs in a worker and is appended through the Slint event loop
+- Dev Drive detection uses the ReFS filesystem name
 
 ## Gates
 
 - `fx-domain` sidebar tests: PASS
 - `fx-settings` sidebar tests: PASS
 - `fx-shell` volume tests: PASS
+- `fx-network` WSL/UNC parser tests: PASS
 - `fx-ui`: 20 unit tests + 3 keyboard tests PASS
 - `fx-app`: 68 unit tests PASS
 
@@ -27,9 +31,8 @@ Branch: `tranche-4-sidebar`
 
 - Persistent pin/reorder controls in the sidebar UI
 - Quick Access merging and pin ordering polish
-- USB hotplug notifications on open machines
-- Mapped network shares and UNC navigation
-- WSL distributions and Dev Drive detection
+- Mapped network share refresh/parity on open machines
+- WSL and network entries need interactive desktop verification
 - Treeview and unavailable-location behavior
 - 1 percent gauge parity against Explorer
 
@@ -37,7 +40,7 @@ Branch: `tranche-4-sidebar`
 
 - Sidebar visible beside the details table: PASS on the current Windows 11 host
 - Logical `C:\` entry and gauge visible: PASS on the current Windows 11 host
-- USB insert/remove: NOT RUN
-- WSL location: NOT RUN unless a distro is installed
-- Network/UNC: NOT RUN
+- USB insert/remove refresh: implemented; automatic desktop row NOT RUN
+- WSL location: parser PASS; installed-distro desktop row NOT RUN unless a distro is installed
+- Network/UNC: parser PASS; live desktop row NOT RUN
 - Full keyboard/Narrator over the sidebar: NOT RUN

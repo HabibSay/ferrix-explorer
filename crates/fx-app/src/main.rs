@@ -53,33 +53,13 @@ fn main() {
     }
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
-    // A log that cannot be created must not keep the explorer from opening: measured on this
-    // host, a launch refused here left the previous window on screen and made the new build
-    // look like it had not changed at all.
-    let _log_guard = init_logging();
-
-    tracing::info!("Ferrix Explorer starting");
-
-    let size = load_window_size().unwrap_or_else(|error| {
-        tracing::warn!(%error, "Could not load saved window size; using defaults");
-        WindowSize::default()
-    });
-
-    let window = ApplicationWindow::new()?;
-
-    // Restore saved window size before showing.
-    window.window().set_size(slint::PhysicalSize::new(
-        size.width as u32,
-        size.height as u32,
-    ));
-
-    let mut sidebar_entries = Vec::<fx_ui::SidebarEntry>::new();
+fn build_sidebar_entries() -> Vec<fx_ui::SidebarEntry> {
+    let mut entries = Vec::<fx_ui::SidebarEntry>::new();
 
     if let Some(base_dirs) = directories::BaseDirs::new() {
         let home = base_dirs.home_dir().to_path_buf();
         if home.exists() {
-            sidebar_entries.push(fx_ui::SidebarEntry {
+            entries.push(fx_ui::SidebarEntry {
                 id: SharedString::from(home.to_string_lossy().into_owned()),
                 label: SharedString::from(crate::strings::SIDEBAR_HOME),
                 unavailable: false,
@@ -93,9 +73,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(path) = path
                 && path.exists()
             {
-                let id = path.to_string_lossy().into_owned();
-                sidebar_entries.push(fx_ui::SidebarEntry {
-                    id: SharedString::from(id.clone()),
+                entries.push(fx_ui::SidebarEntry {
+                    id: SharedString::from(path.to_string_lossy().into_owned()),
                     label: SharedString::from(label),
                     unavailable: false,
                     gauge_percent: 0,
@@ -120,7 +99,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| crate::strings::SIDEBAR_PINNED.to_owned());
-            sidebar_entries.push(fx_ui::SidebarEntry {
+            entries.push(fx_ui::SidebarEntry {
                 id: SharedString::from(path.to_string_lossy().into_owned()),
                 label: SharedString::from(label),
                 unavailable: false,
@@ -139,7 +118,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| crate::strings::SIDEBAR_RECENT.to_owned());
-            sidebar_entries.push(fx_ui::SidebarEntry {
+            entries.push(fx_ui::SidebarEntry {
                 id: SharedString::from(path.to_string_lossy().into_owned()),
                 label: SharedString::from(format!("{}: {}", crate::strings::SIDEBAR_RECENT, label)),
                 unavailable: false,
@@ -164,15 +143,65 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             _ => 0,
         };
         let unavailable = total.is_none() || free.is_none();
-        let label = root.to_string_lossy().into_owned();
-        sidebar_entries.push(fx_ui::SidebarEntry {
+        let mut label = root.to_string_lossy().into_owned();
+        if fx_shell::volume::is_dev_drive(&root) {
+            label = format!("Dev Drive ({label})");
+        }
+        entries.push(fx_ui::SidebarEntry {
             id: SharedString::from(label.clone()),
             label: SharedString::from(label),
             unavailable,
             gauge_percent,
         });
     }
+
+    entries
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
+    // A log that cannot be created must not keep the explorer from opening: measured on this
+    // host, a launch refused here left the previous window on screen and made the new build
+    // look like it had not changed at all.
+    let _log_guard = init_logging();
+
+    tracing::info!("Ferrix Explorer starting");
+
+    let size = load_window_size().unwrap_or_else(|error| {
+        tracing::warn!(%error, "Could not load saved window size; using defaults");
+        WindowSize::default()
+    });
+
+    let window = ApplicationWindow::new()?;
+
+    // Restore saved window size before showing.
+    window.window().set_size(slint::PhysicalSize::new(
+        size.width as u32,
+        size.height as u32,
+    ));
+
+    let sidebar_entries = build_sidebar_entries();
     window.set_sidebar_entries(ModelRc::new(VecModel::from(sidebar_entries)));
+
+    let discovery_window = window.as_weak();
+    std::thread::spawn(move || {
+        let mut discovered = fx_network::discover_mapped_drives();
+        discovered.extend(fx_network::discover_wsl());
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(window) = discovery_window.upgrade() else {
+                return;
+            };
+            let mut entries = build_sidebar_entries();
+            for location in discovered {
+                entries.push(fx_ui::SidebarEntry {
+                    id: SharedString::from(location.path.to_string_lossy().into_owned()),
+                    label: SharedString::from(location.label),
+                    unavailable: false,
+                    gauge_percent: 0,
+                });
+            }
+            window.set_sidebar_entries(ModelRc::new(VecModel::from(entries)));
+        });
+    });
 
     // Determine initial location: user's home directory, falling back to C:\.
     let initial_location = {
@@ -461,6 +490,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // physical pixels. The factor is therefore refreshed while the app runs.
     let drop_context_scale = drop_context.clone();
     let window_weak_scale = window.as_weak();
+    let sidebar_window = window.as_weak();
+    let sidebar_timer = slint::Timer::default();
+    sidebar_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_secs(1),
+        move || {
+            let Some(window) = sidebar_window.upgrade() else {
+                return;
+            };
+            let entries = build_sidebar_entries();
+            window.set_sidebar_entries(ModelRc::new(VecModel::from(entries)));
+        },
+    );
+
     let scale_timer = slint::Timer::default();
     scale_timer.start(
         slint::TimerMode::Repeated,
