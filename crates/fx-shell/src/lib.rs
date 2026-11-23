@@ -19,6 +19,7 @@ pub mod recycle_quota;
 pub mod symlink;
 pub mod thumbnails;
 pub mod volume;
+pub mod window_chrome;
 
 pub use drop_source::{
     DragOutcome, DragSourceRequest, create_shortcut, paths_data_object, run_drag,
@@ -35,6 +36,10 @@ pub use properties::{PropertiesError, PropertiesMode, open_with, show_properties
 pub use thumbnails::{
     DiskCache, FetchedThumbnail, RgbaImage, ThumbnailKey, fetch_from_shell, fetch_thumbnail,
     fetch_thumbnail_into,
+};
+pub use window_chrome::{
+    ChromeError, ChromeMetrics, WindowChrome, enable_per_monitor_dpi_awareness, window_client_size,
+    window_scale, work_area_size,
 };
 
 use windows::{

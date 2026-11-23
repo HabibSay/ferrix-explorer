@@ -100,9 +100,10 @@ fn ctrl_c_and_delete_reach_the_host() {
     window.on_row_selected(move |id, _ctrl, _shift| {
         click_recorder.borrow_mut().push(id);
     });
-    // Click the first row in the details area, to the right of the T4 sidebar.
-    for y in [86.0, 98.0, 110.0, 122.0, 134.0] {
-        for x in [220.0, 260.0, 300.0, 400.0, 500.0] {
+    // Click the first row in the details area, to the right of the T4 sidebar and below
+    // the caption bar, tab strip, address bar, breadcrumb and column header.
+    for y in [186.0, 192.0, 198.0, 204.0] {
+        for x in [236.0, 246.0, 260.0, 274.0] {
             click(&window, x, y);
             if !clicks.borrow().is_empty() {
                 break;
@@ -141,7 +142,7 @@ fn ctrl_c_and_delete_reach_the_host() {
 fn text_editing_surfaces_are_not_hijacked() {
     i_slint_backend_testing::init_no_event_loop();
     let (window, seen) = window_with_row();
-    click(&window, 100.0, 95.0);
+    click(&window, 600.0, 500.0);
 
     // Inline rename active: file shortcuts must not fire.
     window.set_status_rename_target_id(1);
@@ -155,7 +156,7 @@ fn text_editing_surfaces_are_not_hijacked() {
     window.set_status_rename_target_id(-1);
 
     // Address bar focused: F2 must not start a file rename.
-    click(&window, 100.0, 15.0);
+    click(&window, 120.0, 96.0);
     let before = seen.borrow().len();
     press(&window, &key(Key::F2));
     assert_eq!(

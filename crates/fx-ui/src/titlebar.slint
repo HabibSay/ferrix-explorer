@@ -1,0 +1,158 @@
+// Caption bar for the frameless window.
+//
+// The window is created without a native frame, so the app draws its own title band and
+// its own minimise / maximise / close buttons. Dragging, double-click-to-maximise and
+// Aero Snap stay native: the shell's hit-test reports the band as HTCAPTION.
+//
+// Glyphs come from Tabler Icons (MIT, see THIRD_PARTY_NOTICES.md), same source as
+// `icons.slint`.
+
+import { Theme } from "theme.slint";
+import { Strings } from "resources/en-US.slint";
+import { KindIcon } from "icons.slint";
+
+export component WindowCaption inherits Rectangle {
+    in property <string> title: Strings.app-name;
+    in property <bool> maximized: false;
+
+    callback minimize();
+    callback toggle-maximize();
+    callback close();
+
+    height: 34px;
+    background: Theme.chrome;
+    accessible-role: none;
+
+    // Hairline separating the caption from the tab strip.
+    Rectangle {
+        y: parent.height - 1px;
+        width: 100%;
+        height: 1px;
+        background: Theme.border;
+    }
+
+    // One row: the brand, then the three window buttons against the right edge. The title
+    // takes the slack, so the buttons stay at 46 px each and flush right at every width.
+    // Their 46 x 34 geometry is mirrored by the shell's WM_NCHITTEST, which keeps the rest
+    // of the band draggable.
+    HorizontalLayout {
+        padding-left: 12px;
+        spacing: 8px;
+
+        // The mark sits in a fixed 16 x 16 slot centred on the band (a layout would stretch
+        // it to the band's full height, which left it above the title).
+        Rectangle {
+            min-width: 16px;
+            max-width: 16px;
+            height: root.height;
+            background: transparent;
+            accessible-role: none;
+
+            KindIcon {
+                x: 0px;
+                y: (parent.height - 16px) / 2;
+                width: 16px;
+                height: 16px;
+                kind: 1;
+                tint: Theme.accent;
+            }
+        }
+
+        Text {
+            text: root.title;
+            color: Theme.text;
+            font-size: Theme.font-small;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-alignment: left;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+
+        // Minimise
+        Rectangle {
+            width: 46px;
+            height: 34px;
+            background: minimize-touch.has-hover ? Theme.hover : transparent;
+
+            animate background { duration: Theme.quick; }
+
+            minimize-touch := TouchArea {
+                accessible-role: button;
+                accessible-label: Strings.window-minimize;
+                clicked => { root.minimize(); }
+                mouse-cursor: pointer;
+            }
+
+            Path {
+                x: 16px;
+                y: 10px;
+                width: 14px;
+                height: 14px;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                stroke-width: 1.6px;
+                stroke: minimize-touch.has-hover ? Theme.text : Theme.text-muted;
+                commands: "M5 12l14 0";
+            }
+        }
+
+        // Maximise / restore
+        Rectangle {
+            width: 46px;
+            height: 34px;
+            background: maximize-touch.has-hover ? Theme.hover : transparent;
+
+            animate background { duration: Theme.quick; }
+
+            maximize-touch := TouchArea {
+                accessible-role: button;
+                accessible-label: root.maximized ? Strings.window-restore : Strings.window-maximize;
+                clicked => { root.toggle-maximize(); }
+                mouse-cursor: pointer;
+            }
+
+            Path {
+                x: 16px;
+                y: 10px;
+                width: 14px;
+                height: 14px;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                stroke-width: 1.6px;
+                stroke: maximize-touch.has-hover ? Theme.text : Theme.text-muted;
+                commands: root.maximized
+                    ? "M9 9h11v11h-11z M5 15v-10a1 1 0 0 1 1 -1h10"
+                    : "M5 5h14v14h-14z";
+            }
+        }
+
+        // Close
+        Rectangle {
+            width: 46px;
+            height: 34px;
+            background: close-touch.has-hover ? Theme.danger : transparent;
+
+            animate background { duration: Theme.quick; }
+
+            close-touch := TouchArea {
+                accessible-role: button;
+                accessible-label: Strings.window-close;
+                clicked => { root.close(); }
+                mouse-cursor: pointer;
+            }
+
+            Path {
+                x: 16px;
+                y: 10px;
+                width: 14px;
+                height: 14px;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                stroke-width: 1.6px;
+                stroke: close-touch.has-hover ? #ffffff : Theme.text-muted;
+                commands: "M18 6l-12 12 M6 6l12 12";
+            }
+        }
+    }
+}

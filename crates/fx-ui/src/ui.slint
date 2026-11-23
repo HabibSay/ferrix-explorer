@@ -1,8 +1,13 @@
 import { ListView } from "std-widgets.slint";
 import { Strings } from "resources/en-US.slint";
+import { Theme } from "theme.slint";
 import { ConflictDialog, DeleteConfirmation, PatternSelection, ChecksumSheet, ChecksumRow } from "dialogs.slint";
 import { ActivityCenter, ActivityRow } from "activity.slint";
 import { Sidebar, SidebarEntry } from "sidebar.slint";
+import { TabStrip, TabItem } from "tabs.slint";
+import { DualPaneWorkspace } from "dual-pane.slint";
+import { KindIcon } from "icons.slint";
+import { WindowCaption } from "titlebar.slint";
 
 // Represents a single file entry in the list.
 struct FileRow {
@@ -25,6 +30,9 @@ struct FileRow {
 // Represents a column in the details header.
 struct ColumnSpec {
     title: string,
+    // Stable machine key ("name", "size", …): the header may be worded for humans, but a
+    // row decides which value to show from this key, never from the label.
+    key: string,
     width: length,
     visible: bool,
     sort-ascending: bool,
@@ -40,9 +48,29 @@ component FileListItem inherits Rectangle {
     in property <bool> editing;
     in property <string> seed-text;
     in property <int> seed-selection;
+    // The details columns, so a row puts each value under its own header.
+    in property <[ColumnSpec]> columns: [];
     // The row height the list publishes; the OLE drop hit-test uses the same number.
-    in property <length> item-height: 22px;
+    in property <length> item-height: 26px;
     property <string> editing-error: "";
+    // The name cell is as wide as the header's first column; without columns (a bare
+    // model in a test) it keeps a readable minimum.
+    private property <length> name-width: root.columns.length > 0 ? root.columns[0].width : 200px;
+    // Width the columns after the name occupy, published by the host from the column
+    // layout. The name column takes what is left, so the table ends flush with the window
+    // instead of stopping after the last column.
+
+
+    // The text a row shows for a column, matched on the column's own title so a
+    // translated locale keeps working: both sides read the same `Strings` global.
+    public pure function cell-text(key: string) -> string {
+        if (key == "size") { return root.entry.size-text; }
+        if (key == "modified") { return root.entry.modified-text; }
+        if (key == "type") { return root.entry.type-text; }
+        if (key == "attributes") { return root.entry.attributes-text; }
+        return "";
+    }
+
     callback activated();
     callback selected(bool, bool);  // ctrl, shift
     callback context-menu(length, length);
@@ -52,7 +80,11 @@ component FileListItem inherits Rectangle {
     callback rename-validate(string) -> string;
 
     height: root.item-height;
-    background: self.entry.selected ? #0078d7 : Colors.transparent;
+    background: self.entry.selected
+        ? Theme.accent-soft
+        : (touch.has-hover ? Theme.row-hover : Colors.transparent);
+
+    animate background { duration: Theme.quick; }
 
     accessible-role: list-item;
     accessible-label: self.entry.display-name + ", " + self.entry.kind
@@ -99,24 +131,77 @@ component FileListItem inherits Rectangle {
         }
     }
 
+    // One cell per column at the header's own widths, so a value sits under the column
+    // that names it. The first cell also carries the thumbnail or the folder glyph.
     HorizontalLayout {
-        spacing: 4px;
-        padding-left: 4px;
-        // The thumbnail asks for the Shell's picture; a miss leaves the row text-only.
-        if root.entry.has-thumbnail: Image {
-            source: root.entry.thumbnail;
-            width: root.item-height - 4px;
-            height: root.item-height - 4px;
-            image-fit: contain;
-            // Decoration, not a control: the row's own accessible label already names the
-            // entry, and announcing the picture twice would only add noise for Narrator.
-            accessible-role: none;
+        spacing: 0px;
+
+        // The name cell absorbs whatever width the other columns leave unused, so the
+        // table ends flush with the window instead of stopping after the last column.
+        // `name-cell.width` is the width the layout actually gave it, and the rename
+        // editor below follows it.
+        // The header row and every row take the widths the host publishes: the host gives
+        // the name column whatever the window has left after the other columns, so the
+        // table ends flush with the right edge (see `fit_columns` in the app crate).
+        name-cell := Rectangle {
+            width: root.name-width;
+            clip: true;
+
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 8px;
+                spacing: 8px;
+
+                // One fixed slot for the picture, the folder glyph or nothing: every name
+                // starts at the same x, so a column of names reads as a column. A row that
+                // skipped the slot would shift its own text left by its width.
+                Rectangle {
+                    width: root.item-height - 6px;
+                    height: root.item-height - 6px;
+                    background: transparent;
+
+                    // The thumbnail asks for the Shell's picture; a miss leaves the glyph.
+                    if root.entry.has-thumbnail: Image {
+                        width: 100%;
+                        height: 100%;
+                        source: root.entry.thumbnail;
+                        image-fit: contain;
+                        // Decoration, not a control: the row's own accessible label already
+                        // names the entry, and announcing the picture twice adds only noise.
+                        accessible-role: none;
+                    }
+                    // Folders read differently from files at a glance, even without a
+                    // per-type icon: one glyph, the same one the sidebar uses.
+                    if !root.entry.has-thumbnail && root.entry.is-folder: KindIcon {
+                        x: (parent.width - 16px) / 2;
+                        y: (parent.height - 16px) / 2;
+                        kind: 1;
+                        tint: root.entry.selected ? Theme.accent-strong : Theme.text-faint;
+                    }
+                }
+                Text {
+                    text: root.entry.display-name;
+                    color: root.entry.selected ? Theme.selected-text : Theme.text;
+                    font-size: Theme.font-body;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
         }
-        Text {
-            text: root.entry.display-name;
-            color: root.entry.selected ? #ffffff : #000000;
-            vertical-alignment: center;
-            overflow: elide;
+
+        for col[i] in root.columns: Rectangle {
+            width: i == 0 ? 0px : (col.visible ? col.width : 0px);
+            clip: true;
+
+            if i > 0 && col.visible: Text {
+                x: 10px;
+                width: parent.width - 18px;
+                text: root.cell-text(col.key);
+                color: root.entry.selected ? Theme.selected-text : Theme.text-muted;
+                font-size: Theme.font-small;
+                vertical-alignment: center;
+                overflow: elide;
+            }
         }
     }
 
@@ -125,7 +210,7 @@ component FileListItem inherits Rectangle {
     if self.editing: Rectangle {
         x: 2px;
         y: 1px;
-        width: parent.width - 4px;
+        width: name-cell.width - 4px;
         height: parent.height - 2px;
         background: #ffffff;
         border-color: root.editing-error != "" ? #d13438 : #0078d7;
@@ -185,6 +270,7 @@ component FileListItem inherits Rectangle {
 // Virtualized list component.
 component FileList inherits Rectangle {
     in property <[FileRow]> rows: [];
+    in property <[ColumnSpec]> columns: [];
     in property <int> rename-target-id: -1;
     in property <string> rename-seed-text;
     in property <int> rename-seed-selection;
@@ -206,7 +292,7 @@ component FileList inherits Rectangle {
     out property <length> viewport-top: self.absolute-position.y;
     out property <length> viewport-height: file-list.visible-height;
     out property <length> scroll-offset: -file-list.content-y;
-    out property <length> row-height: 22px;
+    out property <length> row-height: 26px;
     callback geometry-changed();
 
     accessible-role: list;
@@ -218,6 +304,7 @@ component FileList inherits Rectangle {
     file-list := ListView {
         for file-row[i] in rows: FileListItem {
             entry: file-row;
+            columns: root.columns;
             item-height: root.row-height;
             editing: file-row.id == root.rename-target-id;
             seed-text: root.rename-seed-text;
@@ -253,8 +340,15 @@ component DetailsTable inherits VerticalLayout {
 
     // Column header row
     Rectangle {
-        height: 28px;
-        background: #f0f0f0;
+        height: 30px;
+        background: Theme.surface;
+
+        Rectangle {
+            y: parent.height - 1px;
+            width: 100%;
+            height: 1px;
+            background: Theme.border;
+        }
 
         HorizontalLayout {
             spacing: 0px;
@@ -262,11 +356,13 @@ component DetailsTable inherits VerticalLayout {
             for col[i] in root.columns: Rectangle {
                 width: col.width;
                 clip: true;
+                background: header-touch.has-hover ? Theme.row-hover : transparent;
 
                 // Header cell touch area — clicking sorts, dragging reorders.
                 header-touch := TouchArea {
                     width: parent.width - 6px;  // leave room for resize handle
-                    height: 28px;
+                    height: 30px;
+                    mouse-cursor: pointer;
 
                     clicked => { root.sort-by-column(i); }
 
@@ -295,13 +391,16 @@ component DetailsTable inherits VerticalLayout {
 
                 // Sort indicator + title text
                 Text {
-                    x: 4px;
+                    x: 10px;
                     y: 0px;
-                    width: parent.width - 10px;
-                    height: 28px;
+                    width: parent.width - 18px;
+                    height: 30px;
                     text: col.sort-active
                         ? (col.title + (col.sort-ascending ? " ▲" : " ▼"))
                         : col.title;
+                    color: col.sort-active ? Theme.accent-strong : Theme.text-muted;
+                    font-size: Theme.font-small;
+                    font-weight: 600;
                     vertical-alignment: center;
                     horizontal-alignment: left;
                     overflow: elide;
@@ -312,7 +411,7 @@ component DetailsTable inherits VerticalLayout {
                     x: parent.width - 6px;
                     y: 0px;
                     width: 6px;
-                    height: 28px;
+                    height: 30px;
                     mouse-cursor: col-resize;
 
                     // Track drag start position
@@ -341,10 +440,12 @@ component DetailsTable inherits VerticalLayout {
                     // Visual divider line
                     Rectangle {
                         x: 2px;
-                        y: 4px;
+                        y: 6px;
                         width: 1px;
-                        height: 20px;
-                        background: #cccccc;
+                        height: 18px;
+                        background: resize-handle.has-hover
+                            ? Theme.accent
+                            : Theme.border-strong;
                     }
                 }
             }
@@ -366,20 +467,38 @@ component AddressBar inherits Rectangle {
         addr-input.focus();
     }
 
-    height: 30px;
-    background: white;
-    border-color: #cccccc;
-    border-width: 1px;
+    height: 40px;
+    background: Theme.chrome;
+    border-width: 0px;
 
-    addr-input := TextInput {
-        x: 4px;
-        y: 4px;
-        width: parent.width - 8px;
-        height: parent.height - 8px;
-        text: root.current-path;
-        accessible-role: text-input;
-        accessible-label: Strings.address-bar-label;
-        accepted => { root.confirmed(self.text); }
+    // A rounded, inset field: the chrome band carries the padding, the field carries
+    // the focus ring, so the address bar reads as one control and not as a boxed row.
+    Rectangle {
+        x: 10px;
+        y: 6px;
+        width: parent.width - 20px;
+        height: parent.height - 12px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: addr-input.has-focus ? Theme.accent : Theme.border;
+        border-radius: Theme.radius-sm;
+        drop-shadow-color: #1c21280f;
+        drop-shadow-blur: 3px;
+        drop-shadow-offset-y: 1px;
+
+        addr-input := TextInput {
+            x: 10px;
+            y: 0px;
+            width: parent.width - 20px;
+            height: parent.height;
+            color: Theme.text;
+            font-size: Theme.font-body;
+            vertical-alignment: center;
+            text: root.current-path;
+            accessible-role: text-input;
+            accessible-label: Strings.address-bar-label;
+            accepted => { root.confirmed(self.text); }
+        }
     }
 
     // Autocomplete dropdown — shown when there are completions.
@@ -387,25 +506,40 @@ component AddressBar inherits Rectangle {
         y: root.height;
         x: 0px;
         width: root.width;
-        height: min(root.completions.length * 22px, 132px);
-        background: #ffffff;
-        border-color: #aaaaaa;
+        height: min(root.completions.length * 24px, 144px);
+        background: Theme.surface;
+        border-color: Theme.border;
         border-width: 1px;
+        border-radius: Theme.radius-sm;
+        drop-shadow-color: #1c212824;
+        drop-shadow-blur: 8px;
+        drop-shadow-offset-y: 2px;
+        clip: true;
 
         accessible-role: list;
         accessible-label: Strings.autocomplete-placeholder;
 
         ListView {
-            for item[_i] in root.completions: TouchArea {
-                height: 22px;
-                clicked => { root.confirmed(item); }
+            for item[_i] in root.completions: Rectangle {
+                height: 24px;
+                background: hovered.has-hover ? Theme.hover : transparent;
                 accessible-role: list-item;
                 accessible-label: item;
+                accessible-action-default => { root.confirmed(item); }
+
                 Text {
                     text: item;
-                    x: 4px;
+                    x: 10px;
+                    width: parent.width - 16px;
+                    color: hovered.has-hover ? Theme.text : Theme.text-muted;
+                    font-size: Theme.font-small;
                     vertical-alignment: center;
                     overflow: elide;
+                }
+
+                hovered := TouchArea {
+                    clicked => { root.confirmed(item); }
+                    mouse-cursor: pointer;
                 }
             }
         }
@@ -422,11 +556,16 @@ component SubfolderMenu inherits Rectangle {
     callback close-requested();
 
     visible: self.visible-menu;
-    background: #ffffff;
-    border-color: #aaaaaa;
+    background: Theme.surface;
+    border-color: Theme.border;
     border-width: 1px;
-    width: 220px;
-    height: min(self.subfolder-items.length * 22px + 4px, 200px);
+    border-radius: Theme.radius-sm;
+    drop-shadow-color: #1c212826;
+    drop-shadow-blur: 10px;
+    drop-shadow-offset-y: 3px;
+    width: 240px;
+    height: min(self.subfolder-items.length * 26px + 8px, 220px);
+    clip: true;
 
     accessible-role: list;
     accessible-label: Strings.subfolder-menu-label;
@@ -446,16 +585,26 @@ component SubfolderMenu inherits Rectangle {
             width: parent.width;
             height: parent.height;
 
-            for label[_i] in root.subfolder-items: TouchArea {
-                height: 22px;
-                clicked => { root.item-selected(label); }
+            for label[_i] in root.subfolder-items: Rectangle {
+                height: 26px;
+                background: item-touch.has-hover ? Theme.hover : transparent;
                 accessible-role: list-item;
                 accessible-label: label;
+                accessible-action-default => { root.item-selected(label); }
+
                 Text {
                     text: label;
-                    x: 4px;
+                    x: 10px;
+                    width: parent.width - 16px;
+                    color: Theme.text;
+                    font-size: Theme.font-small;
                     vertical-alignment: center;
                     overflow: elide;
+                }
+
+                item-touch := TouchArea {
+                    clicked => { root.item-selected(label); }
+                    mouse-cursor: pointer;
                 }
             }
         }
@@ -475,8 +624,8 @@ component Breadcrumb inherits Rectangle {
     callback segment-clicked(int);
     callback subfolder-item-selected(string);
 
-    height: 28px;
-    background: #e8e8e8;
+    height: 34px;
+    background: Theme.chrome;
     accessible-role: none;
     accessible-label: Strings.breadcrumb-label;
 
@@ -491,17 +640,19 @@ component Breadcrumb inherits Rectangle {
 
             // Segment touch area
             seg-touch := TouchArea {
-                width: seg-label.preferred-width + 8px;
-                height: 28px;
+                width: seg-label.preferred-width + 16px;
+                height: 34px;
                 clicked => { root.segment-clicked(i); }
                 accessible-role: button;
                 accessible-label: seg;
+                mouse-cursor: pointer;
 
                 seg-label := Text {
-                    x: 4px;
+                    x: 8px;
                     text: seg;
                     vertical-alignment: center;
-                    color: #0060c0;
+                    color: seg-touch.has-hover ? Theme.accent-strong : Theme.text;
+                    font-size: Theme.font-small;
                     overflow: elide;
                 }
             }
@@ -509,27 +660,37 @@ component Breadcrumb inherits Rectangle {
             // Arrow button to open subfolder menu for this segment.
             arrow-touch := TouchArea {
                 width: 16px;
-                height: 28px;
+                height: 34px;
                 clicked => {
                     root.active-segment-index = i;
                     root.subfolder-menu-visible = true;
                 }
                 accessible-role: button;
                 accessible-label: Strings.subfolder-menu-label;
+                mouse-cursor: pointer;
 
+                // U+25BC rather than U+25BE: Segoe UI carries the former, and the latter
+                // was measured rendering as a missing-glyph box at this size.
+                // Faint until pointed at: every segment carrying a permanent arrow made
+                // the path read as a row of buttons rather than a location.
                 Text {
-                    text: "▾";
+                    text: "▼";
                     vertical-alignment: center;
                     horizontal-alignment: center;
-                    color: #666666;
+                    color: arrow-touch.has-hover ? Theme.accent-strong : Theme.text-faint;
+                    opacity: arrow-touch.has-hover ? 1.0 : 0.35;
+                    font-size: 8px;
                 }
             }
 
             // Chevron separator — not shown after the last segment.
             if i < root.segments.length - 1: Text {
-                text: " > ";
+                text: "›";
+                width: 14px;
                 vertical-alignment: center;
-                color: #888888;
+                horizontal-alignment: center;
+                color: Theme.text-faint;
+                font-size: 13px;
             }
         }
     }
@@ -537,7 +698,7 @@ component Breadcrumb inherits Rectangle {
     // Subfolder popup — rendered as overlay when a segment's arrow was clicked.
     if root.subfolder-menu-visible && root.active-segment-index >= 0: SubfolderMenu {
         x: 4px;
-        y: 28px;
+        y: 34px;
         subfolder-items: root.subfolder-items;
         visible-menu: root.subfolder-menu-visible;
         item-selected(label) => {
@@ -554,8 +715,18 @@ component Breadcrumb inherits Rectangle {
 
 export component ApplicationWindow inherits Window {
     title: Strings.app-title;
+    // The app draws its own caption bar; `fx-shell`'s window chrome keeps the frame's
+    // resizing edges, dragging, double-click-to-maximise and the drop shadow.
+    no-frame: true;
+    background: Theme.chrome;
     min-width: 400px;
     min-height: 300px;
+
+    // Mirrors the OS state so the caption button shows "maximise" or "restore".
+    in-out property <bool> window-maximized: false;
+    callback window-minimize();
+    callback window-toggle-maximize();
+    callback window-close();
 
     // ── Properties ──────────────────────────────────────────────────────────
     in property <[FileRow]> rows: [];
@@ -573,6 +744,11 @@ export component ApplicationWindow inherits Window {
 
     // Tranche 4: Sidebar and drives.
     in property <[SidebarEntry]> sidebar-entries: [];
+
+    // Tranche 5: tabs and dual pane.
+    in property <[TabItem]> tab-items: [];
+    in property <bool> dual-pane-enabled: false;
+    in property <length> dual-pane-ratio: 50px;
 
     // Tranche 2: enriched status bar properties
     in property <string> status-item-count: "";
@@ -636,6 +812,10 @@ export component ApplicationWindow inherits Window {
     callback breadcrumb-segment-clicked(int);
     callback subfolder-item-selected(string);
     callback sidebar-entry-selected(string);
+    callback tab-selected(int);
+    callback tab-close(int);
+    callback tab-new();
+    callback dual-pane-pane-activated(int);
     callback context-menu-requested(int, length, length);
     // History navigation
     callback navigate-back();
@@ -708,12 +888,28 @@ export component ApplicationWindow inherits Window {
         VerticalLayout {
             spacing: 0px;
 
+            WindowCaption {
+                title: Strings.app-name;
+                maximized: root.window-maximized;
+                minimize => { root.window-minimize(); }
+                toggle-maximize => { root.window-toggle-maximize(); }
+                close => { root.window-close(); }
+            }
+
+            tabs-bar := TabStrip {
+                tabs: root.tab-items;
+                tab-selected(id) => { root.tab-selected(id); }
+                tab-close(id) => { root.tab-close(id); }
+                tab-new() => { root.tab-new(); }
+            }
+
             // Address bar with autocomplete
             addr-bar := AddressBar {
                 current-path: root.current-path;
                 completions: root.address-completions;
                 confirmed(text) => { root.address-bar-confirmed(text); }
             }
+
 
             // Breadcrumb
             bc := Breadcrumb {
@@ -724,16 +920,30 @@ export component ApplicationWindow inherits Window {
                 subfolder-item-selected(label) => { root.subfolder-item-selected(label); }
             }
 
-            HorizontalLayout {
+            main-row := HorizontalLayout {
                 vertical-stretch: 1;
 
-                Sidebar {
+                side-band := Sidebar {
                     entries: root.sidebar-entries;
                     entry-selected(id) => { root.sidebar-entry-selected(id); }
                 }
 
+                // The table column takes the width the sidebar leaves. Without the
+                // horizontal stretch a layout child keeps its *preferred* width, so the
+                // table (and the Type column) stopped well short of the window's right
+                // edge, and a maximised window never widened it.
                 VerticalLayout {
                     vertical-stretch: 1;
+                    horizontal-stretch: 1;
+
+                    // Mounted only when the workspace asks for it: an invisible element
+                    // still occupies layout space in Slint, which silently pushed the
+                    // details list down by the pane frame's height while it was hidden.
+                    if root.dual-pane-enabled: DualPaneWorkspace {
+                        enabled: true;
+                        split-ratio: root.dual-pane-ratio;
+                        pane-activated(index) => { root.dual-pane-pane-activated(index); }
+                    }
 
                     // Column headers
                     DetailsTable {
@@ -755,6 +965,7 @@ export component ApplicationWindow inherits Window {
                             width: 100%;
                             height: 100%;
                             rows: root.rows;
+                            columns: root.columns;
                             row-activated(id) => { root.row-activated(id); }
                             row-selected(id, ctrl, shift) => {
                                 // The row's TouchArea absorbs the press; take keyboard focus
@@ -798,18 +1009,27 @@ export component ApplicationWindow inherits Window {
 
             // Enriched status bar
             Rectangle {
-                height: 22px;
-                background: #f8f8f8;
+                height: 28px;
+                background: Theme.chrome;
                 accessible-role: none;
                 accessible-label: root.status-message;
 
+                Rectangle {
+                    y: 0px;
+                    width: 100%;
+                    height: 1px;
+                    background: Theme.border;
+                }
+
                 HorizontalLayout {
-                    spacing: 12px;
-                    padding-left: 4px;
-                    padding-right: 4px;
+                    spacing: 14px;
+                    padding-left: 12px;
+                    padding-right: 12px;
 
                     Text {
                         text: root.status-message;
+                        color: Theme.text-muted;
+                        font-size: Theme.font-small;
                         vertical-alignment: center;
                         horizontal-alignment: left;
                         overflow: elide;
@@ -818,6 +1038,8 @@ export component ApplicationWindow inherits Window {
 
                     Text {
                         text: root.status-item-count;
+                        color: Theme.text-muted;
+                        font-size: Theme.font-small;
                         vertical-alignment: center;
                         horizontal-alignment: left;
                         overflow: elide;
@@ -826,18 +1048,25 @@ export component ApplicationWindow inherits Window {
 
                     if root.status-selected-count != "": Text {
                         text: root.status-selected-count;
+                        color: Theme.selected-text;
+                        font-size: Theme.font-small;
+                        font-weight: 600;
                         vertical-alignment: center;
                         horizontal-alignment: right;
                     }
 
                     if root.status-selected-bytes != "": Text {
                         text: root.status-selected-bytes;
+                        color: Theme.text-muted;
+                        font-size: Theme.font-small;
                         vertical-alignment: center;
                         horizontal-alignment: right;
                     }
 
                     if root.status-free-space != "": Text {
                         text: root.status-free-space;
+                        color: Theme.text-muted;
+                        font-size: Theme.font-small;
                         vertical-alignment: center;
                         horizontal-alignment: right;
                     }

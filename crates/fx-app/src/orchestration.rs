@@ -1309,7 +1309,14 @@ impl Orchestrator {
                 win.set_current_path(path_str);
                 win.set_breadcrumb_segments(ModelRc::new(VecModel::from(breadcrumb)));
                 win.set_rows(ModelRc::new(VecModel::from(Vec::<fx_ui::FileRow>::new())));
-                win.set_columns(ModelRc::new(VecModel::from(columns)));
+                let available = logical_width(&win) - SIDEBAR_WIDTH;
+                let fitted = fit_columns(columns, available);
+                tracing::debug!(
+                    available,
+                    widths = ?fitted.iter().map(|c| c.width).collect::<Vec<_>>(),
+                    "columns fitted"
+                );
+                win.set_columns(ModelRc::new(VecModel::from(fitted)));
                 win.set_status_message(SharedString::from(strings::STATUS_LOADING));
                 win.set_status_item_count(SharedString::default());
                 win.set_status_selected_count(SharedString::default());
@@ -1513,8 +1520,9 @@ impl Orchestrator {
         });
     }
 
-    /// Push the current column layout from the view model to the Slint window.
-    fn push_columns_to_window(&self) {
+    /// Push the current column layout from the view model to the Slint window, fitted to
+    /// the window's current logical width.
+    pub(crate) fn push_columns_to_window(&self) {
         let (layout, sort_key) = {
             let vm = self.view_model.lock().expect("view model lock");
             (vm.column_layout().clone(), vm.sort_key().clone())
@@ -1523,7 +1531,10 @@ impl Orchestrator {
         let window_weak = self.window.clone();
         invoke_from_event_loop(move || {
             if let Some(win) = window_weak.upgrade() {
-                win.set_columns(ModelRc::new(VecModel::from(columns)));
+                let available = logical_width(&win) - SIDEBAR_WIDTH;
+                win.set_columns(ModelRc::new(VecModel::from(fit_columns(
+                    columns, available,
+                ))));
             }
         })
         .ok();
@@ -2019,6 +2030,34 @@ fn build_breadcrumb_segments(location: &Location) -> Vec<SharedString> {
 }
 
 /// Build Slint `ColumnSpec` values from a domain `ColumnLayout` + `SortKey`.
+/// Width of the sidebar, in logical pixels. Mirrors `SidebarMetrics.width` in
+/// `crates/fx-ui/src/sidebar.slint`: the detail table is laid out next to it, so the two
+/// have to agree for the table to end exactly at the window's right edge.
+pub(crate) const SIDEBAR_WIDTH: f32 = 232.0;
+
+/// Stretch the name column so the columns fill `available_width` exactly.
+///
+/// A Slint layout sizes a child from its preferred width, so the table used to stop after
+/// the last column and a wider or maximised window kept an empty band on the right. Giving
+/// the name column the remaining width makes the sum equal the available width, which is
+/// what puts the last column (Type) against the right edge.
+pub(crate) fn fit_columns(
+    mut columns: Vec<fx_ui::ColumnSpec>,
+    available_width: f32,
+) -> Vec<fx_ui::ColumnSpec> {
+    let side: f32 = columns
+        .iter()
+        .skip(1)
+        .filter(|col| col.visible)
+        .map(|col| col.width)
+        .sum();
+    if let Some(first) = columns.first_mut() {
+        let remaining = (available_width - side).max(first.width);
+        first.width = remaining;
+    }
+    columns
+}
+
 fn build_column_specs(
     layout: &ColumnLayout,
     sort_key: &fx_domain::view::SortKey,
@@ -2044,6 +2083,7 @@ fn build_column_specs(
             };
             fx_ui::ColumnSpec {
                 title: SharedString::from(col_name),
+                key: SharedString::from(column_key(cs.column)),
                 width: cs.width_px as f32,
                 visible: cs.visible,
                 sort_ascending: sort_ascending && sort_active,
@@ -2052,6 +2092,29 @@ fn build_column_specs(
             }
         })
         .collect()
+}
+
+/// The window's width in the logical unit Slint lays out in.
+pub(crate) fn logical_width(window: &fx_ui::ApplicationWindow) -> f32 {
+    let physical = window.window().size().width as f32;
+    let scale = window.window().scale_factor();
+    if scale > 0.0 {
+        physical / scale
+    } else {
+        physical
+    }
+}
+
+/// The stable key a row uses to pick the value for a column.
+fn column_key(column: fx_domain::view::Column) -> &'static str {
+    use fx_domain::view::Column;
+    match column {
+        Column::Name => "name",
+        Column::Size => "size",
+        Column::Modified => "modified",
+        Column::Type => "type",
+        Column::Attributes => "attributes",
+    }
 }
 
 /// Human-readable byte count: "1.2 GB", "345 MB", etc.
@@ -2067,5 +2130,69 @@ pub(crate) fn format_bytes(bytes: u64) -> String {
         format!("{:.0} KB", bytes as f64 / KB as f64)
     } else {
         format!("{bytes} B")
+    }
+}
+
+#[cfg(test)]
+mod fit_columns_tests {
+    use super::{SIDEBAR_WIDTH, fit_columns};
+    use fx_ui::ColumnSpec;
+    use slint::SharedString;
+
+    fn spec(key: &str, width: f32) -> ColumnSpec {
+        ColumnSpec {
+            title: SharedString::from(key),
+            key: SharedString::from(key),
+            width,
+            visible: true,
+            sort_ascending: true,
+            sort_active: false,
+            sort_direction: SharedString::from("none"),
+        }
+    }
+
+    #[test]
+    fn the_columns_fill_the_window_so_the_last_one_touches_the_edge() {
+        let columns = vec![
+            spec("name", 240.0),
+            spec("size", 80.0),
+            spec("modified", 160.0),
+            spec("type", 120.0),
+        ];
+        // A maximised 1920 x 1080 display at 150 %: 1280 logical pixels wide.
+        let available = 1280.0 - SIDEBAR_WIDTH;
+        let fitted = fit_columns(columns, available);
+        let total: f32 = fitted.iter().map(|col| col.width).sum();
+        assert!(
+            (total - available).abs() < 0.5,
+            "total {total} vs {available}"
+        );
+        // Only the name column grows.
+        assert_eq!(fitted[0].width, available - 360.0);
+        assert_eq!(fitted[1].width, 80.0);
+        assert_eq!(fitted[2].width, 160.0);
+        assert_eq!(fitted[3].width, 120.0);
+    }
+
+    #[test]
+    fn a_narrow_window_keeps_the_name_column_readable() {
+        // 501 logical pixels are left next to the sidebar: less than the columns ask for.
+        let columns = vec![
+            spec("name", 240.0),
+            spec("size", 80.0),
+            spec("modified", 160.0),
+            spec("type", 120.0),
+        ];
+        let fitted = fit_columns(columns, 501.0);
+        assert_eq!(fitted[0].width, 240.0);
+    }
+
+    #[test]
+    fn hidden_columns_do_not_take_room() {
+        let mut hidden = spec("type", 120.0);
+        hidden.visible = false;
+        let columns = vec![spec("name", 240.0), spec("size", 80.0), hidden];
+        let fitted = fit_columns(columns, 800.0);
+        assert_eq!(fitted[0].width, 720.0);
     }
 }

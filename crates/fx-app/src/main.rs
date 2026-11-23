@@ -23,6 +23,7 @@ mod thumbnails;
 use std::sync::{Arc, Mutex};
 
 use fx_domain::location::Location;
+use fx_domain::tabs::TabStore;
 use fx_settings::sidebar::{PinnedStore, RecentStore};
 use fx_settings::{WindowSize, load_window_size, save_window_size};
 use fx_shell::OleDropRegistration;
@@ -39,6 +40,9 @@ use crate::drag_drop::{DropContext, DropHost, FerrixDropSink, ListGeometry, Reso
 use crate::platform_ops::WindowsPlatformOps;
 
 fn main() {
+    // Before any window exists: a DPI-unaware process is laid out at a different width
+    // from the window Windows gives it, which leaves the UI short of the right edge.
+    fx_shell::enable_per_monitor_dpi_awareness();
     if let Err(error) = run() {
         let message = format!("Ferrix Explorer failed to start: {error}");
         if let Some(base_dirs) = directories::BaseDirs::new() {
@@ -53,18 +57,100 @@ fn main() {
     }
 }
 
-fn build_sidebar_entries() -> Vec<fx_ui::SidebarEntry> {
+// ── Sidebar model ────────────────────────────────────────────────────────────
+//
+// The sidebar is one flat row model. Grouping is expressed by a `show-header` flag on
+// the first row of each section, so the section order and the header placement are
+// decided here, where they are tested, and the Slint component only paints them.
+
+// Glyph kinds understood by `icons.slint`.
+const GLYPH_HOME: i32 = 0;
+const GLYPH_FOLDER: i32 = 1;
+const GLYPH_DRIVE: i32 = 2;
+const GLYPH_NETWORK: i32 = 3;
+const GLYPH_RECENT: i32 = 4;
+
+/// One sidebar row, before its section header and current-folder state are known.
+fn sidebar_row(id: &str, label: &str, section: &str, glyph: i32) -> fx_ui::SidebarEntry {
+    fx_ui::SidebarEntry {
+        id: SharedString::from(id),
+        label: SharedString::from(label),
+        section: SharedString::from(section),
+        detail: SharedString::default(),
+        glyph,
+        unavailable: false,
+        gauge_percent: 0,
+        show_header: false,
+        active: false,
+    }
+}
+
+/// Appends a row, deciding whether it opens a new section and whether it is the
+/// folder the user is looking at.
+fn append_sidebar_entry(
+    entries: &mut Vec<fx_ui::SidebarEntry>,
+    mut entry: fx_ui::SidebarEntry,
+    current: Option<&str>,
+) {
+    entry.show_header = entries
+        .last()
+        .map(|last| last.section != entry.section)
+        .unwrap_or(true);
+    entry.active = current.is_some_and(|current| same_path(entry.id.as_str(), current));
+    entries.push(entry);
+}
+
+/// Whether two spellings name the same folder.
+///
+/// Windows paths are case-insensitive and accept either separator, and a trailing
+/// separator does not change the folder, so `C:\\` and `c:` are the same location.
+fn same_path(candidate: &str, current: &str) -> bool {
+    fn normalized(value: &str) -> String {
+        value
+            .trim_end_matches(['\\', '/'])
+            .replace('/', "\\")
+            .to_ascii_lowercase()
+    }
+    !candidate.is_empty() && normalized(candidate) == normalized(current)
+}
+
+/// A size in GB, one decimal below 100 GB and whole numbers above it.
+fn gigabytes(bytes: u64) -> String {
+    let gb = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+    if gb >= 100.0 {
+        format!("{gb:.0} GB")
+    } else {
+        format!("{gb:.1} GB")
+    }
+}
+
+/// The volume caption under a drive name, empty when the space is unknown.
+fn volume_detail(free: Option<u64>, total: Option<u64>) -> String {
+    match (free, total) {
+        (Some(free), Some(total)) => crate::strings::SIDEBAR_VOLUME_DETAIL_FMT
+            .replace("{free}", &gigabytes(free))
+            .replace("{total}", &gigabytes(total)),
+        _ => String::new(),
+    }
+}
+
+fn build_sidebar_entries(current: Option<&str>) -> Vec<fx_ui::SidebarEntry> {
     let mut entries = Vec::<fx_ui::SidebarEntry>::new();
+    let quick = crate::strings::SIDEBAR_SECTION_QUICK_ACCESS;
 
     if let Some(base_dirs) = directories::BaseDirs::new() {
         let home = base_dirs.home_dir().to_path_buf();
         if home.exists() {
-            entries.push(fx_ui::SidebarEntry {
-                id: SharedString::from(home.to_string_lossy().into_owned()),
-                label: SharedString::from(crate::strings::SIDEBAR_HOME),
-                unavailable: false,
-                gauge_percent: 0,
-            });
+            append_sidebar_entry(
+                &mut entries,
+                sidebar_row(
+                    &home.to_string_lossy(),
+                    crate::strings::SIDEBAR_HOME,
+                    quick,
+                    GLYPH_HOME,
+                ),
+                current,
+            );
         }
     }
 
@@ -73,12 +159,11 @@ fn build_sidebar_entries() -> Vec<fx_ui::SidebarEntry> {
             if let Some(path) = path
                 && path.exists()
             {
-                entries.push(fx_ui::SidebarEntry {
-                    id: SharedString::from(path.to_string_lossy().into_owned()),
-                    label: SharedString::from(label),
-                    unavailable: false,
-                    gauge_percent: 0,
-                });
+                append_sidebar_entry(
+                    &mut entries,
+                    sidebar_row(&path.to_string_lossy(), label, quick, GLYPH_FOLDER),
+                    current,
+                );
             }
         };
         push_known_folder(crate::strings::SIDEBAR_DESKTOP, user_dirs.desktop_dir());
@@ -99,12 +184,16 @@ fn build_sidebar_entries() -> Vec<fx_ui::SidebarEntry> {
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| crate::strings::SIDEBAR_PINNED.to_owned());
-            entries.push(fx_ui::SidebarEntry {
-                id: SharedString::from(path.to_string_lossy().into_owned()),
-                label: SharedString::from(label),
-                unavailable: false,
-                gauge_percent: 0,
-            });
+            append_sidebar_entry(
+                &mut entries,
+                sidebar_row(
+                    &path.to_string_lossy(),
+                    &label,
+                    crate::strings::SIDEBAR_PINNED,
+                    GLYPH_FOLDER,
+                ),
+                current,
+            );
         }
     }
 
@@ -117,13 +206,17 @@ fn build_sidebar_entries() -> Vec<fx_ui::SidebarEntry> {
             let label = path
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| crate::strings::SIDEBAR_RECENT.to_owned());
-            entries.push(fx_ui::SidebarEntry {
-                id: SharedString::from(path.to_string_lossy().into_owned()),
-                label: SharedString::from(format!("{}: {}", crate::strings::SIDEBAR_RECENT, label)),
-                unavailable: false,
-                gauge_percent: 0,
-            });
+                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            append_sidebar_entry(
+                &mut entries,
+                sidebar_row(
+                    &path.to_string_lossy(),
+                    &label,
+                    crate::strings::SIDEBAR_RECENT,
+                    GLYPH_RECENT,
+                ),
+                current,
+            );
         }
     }
 
@@ -147,15 +240,91 @@ fn build_sidebar_entries() -> Vec<fx_ui::SidebarEntry> {
         if fx_shell::volume::is_dev_drive(&root) {
             label = format!("Dev Drive ({label})");
         }
-        entries.push(fx_ui::SidebarEntry {
-            id: SharedString::from(label.clone()),
-            label: SharedString::from(label),
-            unavailable,
-            gauge_percent,
-        });
+        let mut row = sidebar_row(
+            &label,
+            &label,
+            crate::strings::SIDEBAR_SECTION_THIS_PC,
+            GLYPH_DRIVE,
+        );
+        row.detail = SharedString::from(volume_detail(free, total));
+        row.unavailable = unavailable;
+        row.gauge_percent = gauge_percent;
+        append_sidebar_entry(&mut entries, row, current);
     }
 
     entries
+}
+
+/// Pushes a new sidebar model only when it actually changed.
+///
+/// The removable-drive refresh runs on a timer; republishing an identical model every
+/// second would reset the sidebar's hover and scroll position under the pointer.
+fn set_sidebar_if_changed(window: &ApplicationWindow, entries: Vec<fx_ui::SidebarEntry>) {
+    let model = window.get_sidebar_entries();
+    let unchanged = model.row_count() == entries.len()
+        && entries.iter().enumerate().all(|(index, entry)| {
+            model
+                .row_data(index)
+                .is_some_and(|row| same_sidebar_row(&row, entry))
+        });
+    if !unchanged {
+        window.set_sidebar_entries(ModelRc::new(VecModel::from(entries)));
+    }
+}
+
+fn same_sidebar_row(left: &fx_ui::SidebarEntry, right: &fx_ui::SidebarEntry) -> bool {
+    left.id == right.id
+        && left.label == right.label
+        && left.section == right.section
+        && left.detail == right.detail
+        && left.glyph == right.glyph
+        && left.unavailable == right.unavailable
+        && left.gauge_percent == right.gauge_percent
+        && left.show_header == right.show_header
+        && left.active == right.active
+}
+
+/// The folder the window is showing, as a tab path; the drive root when it has none.
+fn current_folder(window: &ApplicationWindow) -> std::path::PathBuf {
+    let current = window.get_current_path();
+    if current.is_empty() {
+        std::path::PathBuf::from(r"C:\")
+    } else {
+        std::path::PathBuf::from(current.as_str())
+    }
+}
+
+/// The caption of one tab: the folder name, or the path itself for a drive root.
+fn tab_title(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+fn tab_items(store: &TabStore) -> Vec<fx_ui::TabItem> {
+    store
+        .paths()
+        .iter()
+        .enumerate()
+        .map(|(index, path)| fx_ui::TabItem {
+            id: index as i32,
+            title: slint::SharedString::from(tab_title(path)),
+            active: index == store.active_index(),
+        })
+        .collect()
+}
+
+/// Store the window size the user left behind. Shared by the native close path and the
+/// app's own close button, so a window closed either way reopens the same size.
+fn persist_window_size(window: &ApplicationWindow) {
+    let physical = window.window().size();
+    let saved = WindowSize {
+        width: physical.width as i32,
+        height: physical.height as i32,
+    };
+    if let Err(error) = save_window_size(saved) {
+        tracing::warn!(%error, "Could not save window size");
+    }
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -173,13 +342,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let window = ApplicationWindow::new()?;
 
-    // Restore saved window size before showing.
+    // Restore the saved window size before showing.
     window.window().set_size(slint::PhysicalSize::new(
         size.width as u32,
         size.height as u32,
     ));
 
-    let sidebar_entries = build_sidebar_entries();
+    // Determine initial location: user's home directory, falling back to C:\\.
+    let initial_location = {
+        let home = directories::BaseDirs::new()
+            .map(|b| b.home_dir().to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\"));
+        Location::Local(home)
+    };
+
+    let initial_current = match &initial_location {
+        Location::Local(path) => path.to_string_lossy().into_owned(),
+        _ => String::new(),
+    };
+    let sidebar_entries = build_sidebar_entries(Some(initial_current.as_str()));
     window.set_sidebar_entries(ModelRc::new(VecModel::from(sidebar_entries)));
 
     let discovery_window = window.as_weak();
@@ -190,26 +371,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let Some(window) = discovery_window.upgrade() else {
                 return;
             };
-            let mut entries = build_sidebar_entries();
+            let current = window.get_current_path();
+            let mut entries = build_sidebar_entries(Some(current.as_str()));
             for location in discovered {
-                entries.push(fx_ui::SidebarEntry {
-                    id: SharedString::from(location.path.to_string_lossy().into_owned()),
-                    label: SharedString::from(location.label),
-                    unavailable: false,
-                    gauge_percent: 0,
-                });
+                append_sidebar_entry(
+                    &mut entries,
+                    sidebar_row(
+                        &location.path.to_string_lossy(),
+                        &location.label,
+                        crate::strings::SIDEBAR_SECTION_NETWORK,
+                        GLYPH_NETWORK,
+                    ),
+                    Some(current.as_str()),
+                );
             }
-            window.set_sidebar_entries(ModelRc::new(VecModel::from(entries)));
+            set_sidebar_if_changed(&window, entries);
         });
     });
 
-    // Determine initial location: user's home directory, falling back to C:\.
-    let initial_location = {
-        let home = directories::BaseDirs::new()
-            .map(|b| b.home_dir().to_path_buf())
-            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\"));
-        Location::Local(home)
+    let mut tab_store = TabStore::new_empty();
+    let initial_tab_path = match &initial_location {
+        Location::Local(path) => path.clone(),
+        _ => std::path::PathBuf::from(r"C:\"),
     };
+    tab_store.open(initial_tab_path);
+    let initial_tab_items = tab_items(&tab_store);
+    window.set_tab_items(ModelRc::new(VecModel::from(initial_tab_items)));
 
     // Tranche 3 slice 2: the shared drop state. The UI publishes the list geometry
     // and the rows into it; the OLE callbacks only ever read it, because they run
@@ -282,6 +469,69 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
 
         // Subfolder item selected: navigate to the path.
+        let tab_store = std::rc::Rc::new(std::cell::RefCell::new(tab_store));
+
+        let tab_store_new = tab_store.clone();
+        let win_tab_new = window.as_weak();
+        let orch_tab_new = orch.clone();
+        win.on_tab_new(move || {
+            let Some(win) = win_tab_new.upgrade() else {
+                return;
+            };
+            // A new tab opens where the user already is, exactly like Ctrl+T.
+            let path = current_folder(&win);
+            tab_store_new.borrow_mut().open(path.clone());
+            {
+                let tabs = tab_store_new.borrow();
+                win.set_tab_items(ModelRc::new(VecModel::from(tab_items(&tabs))));
+            }
+            orch_tab_new
+                .lock()
+                .unwrap()
+                .navigate_to(Location::Local(path));
+        });
+
+        let tab_store_close = tab_store.clone();
+        let win_tab_close = window.as_weak();
+        let orch_tab_close = orch.clone();
+        win.on_tab_close(move |id| {
+            let index = id as usize;
+            let mut tabs = tab_store_close.borrow_mut();
+            tabs.activate(index);
+            tabs.close_active();
+            if let Some(win) = win_tab_close.upgrade() {
+                win.set_tab_items(ModelRc::new(VecModel::from(tab_items(&tabs))));
+                if let Some(path) = tabs.active_path() {
+                    let path = path.clone();
+                    drop(tabs);
+                    orch_tab_close
+                        .lock()
+                        .unwrap()
+                        .navigate_to(Location::Local(path));
+                }
+            }
+        });
+
+        let tab_store_select = tab_store.clone();
+        let win_tab_select = window.as_weak();
+        let orch_tab_select = orch.clone();
+        win.on_tab_selected(move |id| {
+            let index = id as usize;
+            tab_store_select.borrow_mut().activate(index);
+            if let Some(win) = win_tab_select.upgrade() {
+                let tabs = tab_store_select.borrow();
+                win.set_tab_items(ModelRc::new(VecModel::from(tab_items(&tabs))));
+                if let Some(path) = tabs.active_path() {
+                    let path = path.clone();
+                    drop(tabs);
+                    orch_tab_select
+                        .lock()
+                        .unwrap()
+                        .navigate_to(Location::Local(path));
+                }
+            }
+        });
+
         let orch_sub = orch.clone();
         win.on_subfolder_item_selected(move |item| {
             orch_sub.lock().unwrap().navigate_to_path(&item);
@@ -317,9 +567,60 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // focus-address-bar callback: handled in Slint (calls focus-input() directly).
         win.on_focus_address_bar(|| {});
 
-        // Tranche 2: keyboard shortcuts → domain action → orchestrator command.
+        // Tranche 2/5: keyboard shortcuts → domain action/tab state → orchestrator command.
         let orch_keys = orch.clone();
+        let tab_store_shortcuts = tab_store.clone();
+        let win_tab_shortcuts = window.as_weak();
+        let orch_tab_shortcuts = orch.clone();
         win.on_shortcut_key(move |text, ctrl, shift, alt| {
+            if ctrl && text.eq_ignore_ascii_case("t") {
+                let path = win_tab_shortcuts
+                    .upgrade()
+                    .map(|win| current_folder(&win))
+                    .unwrap_or_else(|| std::path::PathBuf::from(r"C:\"));
+                tab_store_shortcuts.borrow_mut().open(path.clone());
+                if let Some(win) = win_tab_shortcuts.upgrade() {
+                    let tabs = tab_store_shortcuts.borrow();
+                    win.set_tab_items(ModelRc::new(VecModel::from(tab_items(&tabs))));
+                }
+                orch_tab_shortcuts
+                    .lock()
+                    .unwrap()
+                    .navigate_to(Location::Local(path));
+                return true;
+            }
+            if ctrl && text.eq_ignore_ascii_case("w") {
+                tab_store_shortcuts.borrow_mut().close_active();
+                if let Some(win) = win_tab_shortcuts.upgrade() {
+                    let tabs = tab_store_shortcuts.borrow();
+                    win.set_tab_items(ModelRc::new(VecModel::from(tab_items(&tabs))));
+                    if let Some(path) = tabs.active_path() {
+                        let path = path.clone();
+                        drop(tabs);
+                        orch_tab_shortcuts
+                            .lock()
+                            .unwrap()
+                            .navigate_to(Location::Local(path));
+                    }
+                }
+                return true;
+            }
+            if ctrl && (text == "\t" || text.eq_ignore_ascii_case("tab")) {
+                tab_store_shortcuts.borrow_mut().cycle_next();
+                if let Some(win) = win_tab_shortcuts.upgrade() {
+                    let tabs = tab_store_shortcuts.borrow();
+                    win.set_tab_items(ModelRc::new(VecModel::from(tab_items(&tabs))));
+                    if let Some(path) = tabs.active_path() {
+                        let path = path.clone();
+                        drop(tabs);
+                        orch_tab_shortcuts
+                            .lock()
+                            .unwrap()
+                            .navigate_to(Location::Local(path));
+                    }
+                }
+                return true;
+            }
             match shortcuts::action_for(&text, ctrl, shift, alt) {
                 Some(action) => orch_keys.lock().unwrap().dispatch_action(action),
                 None => false,
@@ -490,6 +791,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // physical pixels. The factor is therefore refreshed while the app runs.
     let drop_context_scale = drop_context.clone();
     let window_weak_scale = window.as_weak();
+    let last_size = std::rc::Rc::new(std::cell::Cell::new((0i32, 0i32, 0u32, 0u32)));
+    let orch_columns = orch.clone();
     let sidebar_window = window.as_weak();
     let sidebar_timer = slint::Timer::default();
     sidebar_timer.start(
@@ -499,8 +802,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let Some(window) = sidebar_window.upgrade() else {
                 return;
             };
-            let entries = build_sidebar_entries();
-            window.set_sidebar_entries(ModelRc::new(VecModel::from(entries)));
+            let current = window.get_current_path();
+            let entries = build_sidebar_entries(Some(current.as_str()));
+            set_sidebar_if_changed(&window, entries);
         },
     );
 
@@ -516,6 +820,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(mut context) = drop_context_scale.lock() {
                 context.set_scale_factor(scale);
             }
+            // Layout diagnostic: Win32's client size and the size Slint lays out can drift
+            // apart, and the UI then stops short of the window's right edge.
+            if let Ok(hwnd) = get_hwnd(&win)
+                && let Some((client_width, client_height)) = fx_shell::window_client_size(hwnd)
+            {
+                let slint = win.window().size();
+                let observed = (client_width, client_height, slint.width, slint.height);
+                if last_size.replace(observed) != observed {
+                    // The detail columns are fitted to the window width, so a resize (a
+                    // maximise in particular) has to re-publish them.
+                    match orch_columns.lock() {
+                        Ok(orch) => orch.push_columns_to_window(),
+                        Err(err) => tracing::warn!("column refit skipped: {err}"),
+                    }
+                    tracing::info!(
+                        win32_client = ?(client_width, client_height),
+                        slint_physical = ?(slint.width, slint.height),
+                        slint_logical = ?(
+                            slint.width as f32 / scale,
+                            slint.height as f32 / scale
+                        ),
+                        scale,
+                        "window size"
+                    );
+                }
+            }
         },
     );
 
@@ -526,16 +856,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // finish before the runtime is dropped.
         orch_close.lock().unwrap().close_conflict_channel();
         if let Some(w) = window_weak.upgrade() {
-            let phys = w.window().size();
-            let saved = WindowSize {
-                width: phys.width as i32,
-                height: phys.height as i32,
-            };
-            if let Err(error) = save_window_size(saved) {
-                tracing::warn!(%error, "Could not save window size");
-            }
+            persist_window_size(&w);
         }
         slint::CloseRequestResponse::HideWindow
+    });
+
+    // Caption-bar buttons. Hover and clicks stay in Slint (so they behave like every
+    // other button); the WM_NCHITTEST chrome keeps the rest of the band draggable.
+    let weak = window.as_weak();
+    window.on_window_minimize(move || {
+        if let Some(w) = weak.upgrade() {
+            w.window().set_minimized(true);
+        }
+    });
+
+    let weak = window.as_weak();
+    window.on_window_toggle_maximize(move || {
+        if let Some(w) = weak.upgrade() {
+            let next = !w.window().is_maximized();
+            w.window().set_maximized(next);
+            w.set_window_maximized(next);
+        }
+    });
+
+    let weak = window.as_weak();
+    window.on_window_close(move || {
+        if let Some(w) = weak.upgrade() {
+            persist_window_size(&w);
+            if let Err(error) = w.window().hide() {
+                tracing::warn!(%error, "Could not hide the window");
+            }
+        }
     });
 
     // The OLE drop registration needs the HWND, which Slint only materialises after
@@ -548,6 +899,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // OleDropRegistration is !Send and is never moved off that thread.
     thread_local! {
         static DROP_REG: std::cell::RefCell<Option<OleDropRegistration>> =
+            const { std::cell::RefCell::new(None) };
+        /// Owned for the run loop: dropping it would uninstall the window subclass.
+        static CHROME: std::cell::RefCell<Option<fx_shell::WindowChrome>> =
             const { std::cell::RefCell::new(None) };
     }
 
@@ -618,8 +972,83 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         },
     );
 
+    // The window is frameless in Slint, so the shell supplies what the native frame used to
+    // do: dragging the caption band, the resize edges, double-click to maximise and the
+    // maximise state. That needs the HWND, and Slint materialises the native window only on
+    // the first event-loop tick (the same reason the OLE registration retries), so retry
+    // briefly instead of reading the handle once, too early.
+    let chrome_timer = std::rc::Rc::new(slint::Timer::default());
+    let chrome_retry = std::rc::Rc::clone(&chrome_timer);
+    let chrome_window = window.as_weak();
+    let chrome_attempts = std::cell::Cell::new(0u32);
+    let saved_width = size.width;
+    let saved_height = size.height;
+    chrome_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(50),
+        move || {
+            let Some(win) = chrome_window.upgrade() else {
+                return;
+            };
+            let attempts = chrome_attempts.get() + 1;
+            chrome_attempts.set(attempts);
+            match get_hwnd(&win) {
+                Ok(hwnd) => {
+                    chrome_retry.stop();
+                    let weak = win.as_weak();
+                    match fx_shell::WindowChrome::install(
+                        hwnd,
+                        fx_shell::ChromeMetrics::default(),
+                        move |maximized| {
+                            if let Some(w) = weak.upgrade() {
+                                w.set_window_maximized(maximized);
+                            }
+                        },
+                    ) {
+                        Ok(chrome) => {
+                            CHROME.with(|slot| *slot.borrow_mut() = Some(chrome));
+                            // Keep the restored window on screen: a size saved on a bigger
+                            // monitor would open with the caption buttons past the right and
+                            // bottom edges, and a frameless window that cannot be dragged
+                            // leaves no way to reach them again.
+                            if let Some((work_width, work_height)) = fx_shell::work_area_size(hwnd)
+                            {
+                                // The size set before `show()` does not survive the window
+                                // creation, so restore it here, clamped to the work area.
+                                win.window().set_size(slint::PhysicalSize::new(
+                                    (saved_width as u32).min(work_width).max(400),
+                                    (saved_height as u32).min(work_height).max(300),
+                                ));
+                            }
+                            tracing::info!(
+                                attempts,
+                                win32_scale = fx_shell::window_scale(hwnd),
+                                slint_scale = win.window().scale_factor(),
+                                size = ?win.window().size(),
+                                "Custom window chrome installed"
+                            );
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "Custom window chrome unavailable");
+                        }
+                    }
+                }
+                Err(error) if attempts >= 100 => {
+                    chrome_retry.stop();
+                    tracing::warn!(
+                        %error,
+                        attempts,
+                        "Could not obtain HWND for the custom window chrome"
+                    );
+                }
+                Err(_) => {}
+            }
+        },
+    );
+
     // Show the window and hand control to the Slint event loop.
     window.window().show()?;
+
     window.run()?;
 
     // Revoke OLE drop target before the HWND is destroyed (still on the UI thread
@@ -632,6 +1061,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // ole_timer is dropped here; the single-shot has already fired so this is a no-op.
     drop(ole_timer);
+    drop(chrome_timer);
 
     // The scale-factor timer stops with the window.
     drop(scale_timer);
@@ -757,6 +1187,66 @@ fn init_logging() -> Option<WorkerGuard> {
 mod tests {
     use super::*;
     use fx_a11y::root_accessibility;
+
+    /// Sidebar grouping: the first row of a section opens it, and only the folder the
+    /// user is looking at is marked active.
+    #[test]
+    fn sidebar_rows_open_a_section_once_and_mark_the_current_folder() {
+        let mut entries = Vec::new();
+        append_sidebar_entry(
+            &mut entries,
+            sidebar_row("C:\\Users", "Users", "Quick access", GLYPH_HOME),
+            Some("c:\\users"),
+        );
+        append_sidebar_entry(
+            &mut entries,
+            sidebar_row("C:\\Work", "Work", "Quick access", GLYPH_FOLDER),
+            Some("c:\\users"),
+        );
+        append_sidebar_entry(
+            &mut entries,
+            sidebar_row("D:\\", "D:\\", "This PC", GLYPH_DRIVE),
+            Some("c:\\users"),
+        );
+
+        assert!(entries[0].show_header, "the first section starts here");
+        assert!(!entries[1].show_header, "the same section is not reopened");
+        assert!(entries[2].show_header, "a new section starts here");
+        assert!(entries[0].active, "the home row is the current folder");
+        assert!(!entries[1].active);
+        assert!(!entries[2].active);
+    }
+
+    #[test]
+    fn same_path_ignores_case_separators_and_a_trailing_separator() {
+        assert!(same_path("C:\\Users\\", "c:/users"));
+        assert!(!same_path("C:\\Users", "C:\\Windows"));
+        assert!(!same_path("", ""), "an empty location is never current");
+    }
+
+    #[test]
+    fn volume_detail_names_free_and_total_space() {
+        let gb = 1024u64 * 1024 * 1024;
+        assert_eq!(
+            volume_detail(Some(120 * gb), Some(500 * gb)),
+            "120 GB free of 500 GB"
+        );
+        assert_eq!(
+            volume_detail(Some(gb / 2), Some(gb)),
+            "0.5 GB free of 1.0 GB"
+        );
+        assert_eq!(
+            volume_detail(None, Some(gb)),
+            "",
+            "an unknown volume has no caption"
+        );
+    }
+
+    #[test]
+    fn a_tab_is_captioned_by_its_folder_name_and_a_root_by_its_path() {
+        assert_eq!(tab_title(std::path::Path::new("C:\\Users\\ana")), "ana");
+        assert_eq!(tab_title(std::path::Path::new("C:\\")), "C:\\");
+    }
 
     #[test]
     fn native_and_slint_resources_share_the_window_title() {

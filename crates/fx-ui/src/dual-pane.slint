@@ -1,0 +1,109 @@
+// Dual-pane workspace scaffold (Tranche 5, visual completion pass).
+//
+// This component owns the frame, the captions and the divider only. Each pane's
+// listing still belongs to the workspace host: no second model or orchestrator is
+// attached here yet, so the workspace is kept out of the live layout until that lands.
+
+import { Theme } from "theme.slint";
+import { Strings } from "resources/en-US.slint";
+
+export component PaneDivider inherits Rectangle {
+    background: Theme.chrome;
+    accessible-role: slider;
+    accessible-label: Strings.dual-pane-divider-label;
+
+    TouchArea {
+        mouse-cursor: ew-resize;
+    }
+
+    // Grip dots: the divider reads as something that can be moved.
+    VerticalLayout {
+        alignment: center;
+        spacing: 3px;
+
+        for _dot in 3: HorizontalLayout {
+            alignment: center;
+
+            Rectangle {
+                width: 2px;
+                height: 2px;
+                border-radius: 1px;
+                background: Theme.border-strong;
+            }
+        }
+    }
+}
+
+export component PaneFrame inherits Rectangle {
+    in property <string> caption: "";
+    in property <bool> active: false;
+
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: active ? Theme.accent : Theme.border;
+    border-radius: Theme.radius-sm;
+    clip: true;
+
+    Rectangle {
+        y: 0px;
+        width: 100%;
+        height: 28px;
+        background: Theme.chrome;
+
+        Rectangle {
+            y: parent.height - 1px;
+            width: 100%;
+            height: 1px;
+            background: Theme.border;
+        }
+
+        Text {
+            x: 10px;
+            width: parent.width - 20px;
+            height: parent.height;
+            text: root.caption;
+            color: root.active ? Theme.selected-text : Theme.text-muted;
+            font-size: Theme.font-caption;
+            font-weight: 600;
+            letter-spacing: 0.6px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+export component DualPaneWorkspace inherits Rectangle {
+    in property <bool> enabled: false;
+    in property <length> split-ratio: 50px;
+
+    callback pane-activated(int);
+
+    background: transparent;
+
+    if enabled: HorizontalLayout {
+        spacing: 0px;
+
+        PaneFrame {
+            caption: Strings.dual-pane-left;
+            width: parent.width * split-ratio / 100px;
+
+            TouchArea {
+                clicked => { root.pane-activated(0); }
+            }
+        }
+
+        PaneDivider {
+            width: 8px;
+            height: 100%;
+        }
+
+        PaneFrame {
+            caption: Strings.dual-pane-right;
+            horizontal-stretch: 1;
+
+            TouchArea {
+                clicked => { root.pane-activated(1); }
+            }
+        }
+    }
+}

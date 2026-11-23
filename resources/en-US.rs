@@ -4,7 +4,16 @@
 //! keep identifiers stable; no user-visible text should be hard-coded in UI code.
 
 /// Caption of the top-level window. Also used as the window's UI Automation name.
-pub const APP_TITLE: &str = "Ferrix Explorer — Tranche 4";
+pub const APP_TITLE: &str = "Ferrix Explorer — Tranche 4/5";
+
+/// Short product name, shown in the app's own caption bar.
+pub const APP_NAME: &str = "Ferrix Explorer";
+
+/// Caption-bar buttons (frameless window).
+pub const WINDOW_MINIMIZE: &str = "Minimize";
+pub const WINDOW_MAXIMIZE: &str = "Maximize";
+pub const WINDOW_RESTORE: &str = "Restore";
+pub const WINDOW_CLOSE: &str = "Close";
 
 /// Sidebar labels for known folders and pinned navigation.
 pub const SIDEBAR_HOME: &str = "Home";
@@ -16,6 +25,14 @@ pub const SIDEBAR_VIDEOS: &str = "Videos";
 pub const SIDEBAR_MUSIC: &str = "Music";
 pub const SIDEBAR_PINNED: &str = "Pinned";
 pub const SIDEBAR_RECENT: &str = "Recent";
+
+/// Sidebar section headings (Tranche 4 visual pass).
+pub const SIDEBAR_SECTION_QUICK_ACCESS: &str = "Quick access";
+pub const SIDEBAR_SECTION_THIS_PC: &str = "This PC";
+pub const SIDEBAR_SECTION_NETWORK: &str = "Network";
+
+/// Volume row detail under a drive name; `{free}` and `{total}` are filled with sizes.
+pub const SIDEBAR_VOLUME_DETAIL_FMT: &str = "{free} free of {total}";
 
 /// Label of the app-local `IContextMenu` command.
 pub const ABOUT_MENU_LABEL: &str = "About Ferrix";

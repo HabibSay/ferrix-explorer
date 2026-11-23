@@ -1,58 +1,176 @@
-import { ListView } from "std-widgets.slint";
+// Sidebar and drives surface (Tranche 4, visual completion pass).
+//
+// The sidebar is one flat model of rows: the host inserts a `show-header` flag on the
+// first row of each section, so grouping lives in the model (where it is tested) and
+// not in a nested layout this component would have to rebuild.
+
+import { Theme } from "theme.slint";
+import { KindIcon } from "icons.slint";
+import { Strings } from "resources/en-US.slint";
 
 export struct SidebarEntry {
     id: string,
     label: string,
+    section: string,
+    detail: string,
+    // 0 home, 1 folder, 2 drive, 3 network, 4 clock.
+    glyph: int,
     unavailable: bool,
     gauge-percent: int,
+    show-header: bool,
+    active: bool,
+}
+
+// Small all-caps heading above a group of entries.
+export component SidebarSectionHeader inherits Rectangle {
+    in property <string> title: "";
+
+    height: 30px;
+    background: transparent;
+    accessible-role: none;
+
+    Text {
+        x: 10px;
+        width: parent.width - 20px;
+        height: parent.height;
+        text: root.title;
+        color: Theme.text-faint;
+        font-size: Theme.font-caption;
+        font-weight: 600;
+        letter-spacing: 0.7px;
+        vertical-alignment: center;
+        horizontal-alignment: left;
+    }
+}
+
+// One navigable row: icon, name, optional volume detail and gauge.
+export component SidebarEntryRow inherits Rectangle {
+    in property <SidebarEntry> entry;
+
+    callback selected();
+
+    height: entry.detail != "" ? 46px : 30px;
+    background: entry.active
+        ? Theme.accent-soft
+        : (touch.has-hover ? Theme.hover : transparent);
+    border-radius: Theme.radius-sm;
+    opacity: entry.unavailable ? 0.55 : 1.0;
+
+    animate background { duration: Theme.quick; }
+
+    accessible-role: list-item;
+    accessible-label: entry.label
+        + (entry.gauge-percent > 0 ? ", " + entry.gauge-percent + "% used" : "")
+        + (entry.unavailable ? ", unavailable" : "")
+        + (entry.active ? ", current folder" : "");
+    accessible-action-default => { root.selected(); }
+
+    touch := TouchArea {
+        clicked => { root.selected(); }
+        mouse-cursor: pointer;
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 8px;
+        spacing: 8px;
+
+        // Centred against the label: a fixed-size child in a horizontal layout sits at the
+        // top by default, which put the glyph above the text instead of beside it.
+        VerticalLayout {
+            alignment: center;
+
+            KindIcon {
+                kind: entry.glyph;
+                tint: entry.active ? Theme.accent-strong : Theme.text-muted;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 1px;
+
+            Text {
+                text: entry.label;
+                color: entry.active ? Theme.selected-text : Theme.text;
+                font-size: Theme.font-body;
+                font-weight: entry.active ? 600 : 400;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+
+            if entry.detail != "": Text {
+                text: entry.detail;
+                color: Theme.text-faint;
+                font-size: Theme.font-caption;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+
+            if entry.gauge-percent > 0: Rectangle {
+                height: 4px;
+                border-radius: 2px;
+                background: Theme.track;
+
+                Rectangle {
+                    width: parent.width * min(entry.gauge-percent, 100) / 100;
+                    height: parent.height;
+                    border-radius: 2px;
+                    background: entry.gauge-percent >= 90 ? Theme.warning : Theme.accent;
+                }
+            }
+        }
+    }
+}
+
+/// Width of the sidebar. It lives in a global so the table can subtract it without reading
+/// a laid-out element's width, which a binding outside the layout sees as zero.
+export global SidebarMetrics {
+    out property <length> width: 232px;
 }
 
 export component Sidebar inherits Rectangle {
     in property <[SidebarEntry]> entries: [];
+
     callback entry-selected(string);
 
-    width: 180px;
-    background: #f3f3f3;
-    border-width: 1px;
-    border-color: #d9d9d9;
-
+    width: SidebarMetrics.width;
+    background: Theme.sidebar-bg;
     accessible-role: list;
+    accessible-label: Strings.sidebar-label;
 
-    ListView {
-        for entry[i] in entries: Rectangle {
-            height: 32px;
-            opacity: entry.unavailable ? 0.65 : 1.0;
+    Flickable {
+        width: 100%;
+        height: 100%;
 
-            accessible-role: list-item;
-            accessible-label: entry.label + (entry.unavailable ? ", unavailable" : "");
-            accessible-action-default => { entry-selected(entry.id); }
+        VerticalLayout {
+            padding-top: 6px;
+            padding-bottom: 10px;
+            padding-left: 8px;
+            padding-right: 8px;
+            spacing: 2px;
 
-            TouchArea {
-                clicked => { root.entry-selected(entry.id); }
-            }
-
-            VerticalLayout {
-                padding-left: 10px;
-                padding-right: 10px;
+            for entry[i] in entries: VerticalLayout {
                 spacing: 2px;
 
-                Text {
-                    text: entry.label;
-                    overflow: elide;
-                    vertical-alignment: center;
+                if entry.show-header: SidebarSectionHeader {
+                    title: entry.section;
                 }
 
-                if entry.gauge-percent > 0: Rectangle {
-                    height: 3px;
-                    background: #d9d9d9;
-
-                    Rectangle {
-                        width: parent.width * entry.gauge-percent / 100;
-                        height: parent.height;
-                        background: #0078d7;
-                    }
+                SidebarEntryRow {
+                    entry: entry;
+                    selected => { root.entry-selected(entry.id); }
                 }
             }
         }
+    }
+
+    // Separator drawn inside the band, so the sidebar reads as a panel and not as a box.
+    Rectangle {
+        x: parent.width - 1px;
+        y: 0px;
+        width: 1px;
+        height: 100%;
+        background: Theme.border;
     }
 }

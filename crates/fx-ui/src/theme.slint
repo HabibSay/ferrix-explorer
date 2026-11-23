@@ -1,0 +1,47 @@
+// Design tokens for the Ferrix Explorer shell (Tranche 4/5 visual pass).
+//
+// One place for the palette, radii and type scale, so the sidebar, the tab strip,
+// the toolbar and the list cannot drift apart. Values are calm and low-saturation:
+// a file explorer is read for hours, not glanced at once.
+
+export global Theme {
+    // ── Surfaces ──────────────────────────────────────────────────────────────
+    out property <color> bg: #f4f6f9;
+    out property <color> surface: #ffffff;
+    out property <color> chrome: #f7f8fb;
+    out property <color> sidebar-bg: #eef1f6;
+    out property <color> hover: #e7ebf3;
+    out property <color> row-hover: #f2f5fa;
+
+    // ── Lines ─────────────────────────────────────────────────────────────────
+    out property <color> border: #e1e5ec;
+    out property <color> border-strong: #cfd6e0;
+    out property <color> track: #dde2ea;
+
+    // ── Text ──────────────────────────────────────────────────────────────────
+    out property <color> text: #1c2128;
+    out property <color> text-muted: #626c7a;
+    out property <color> text-faint: #98a2b1;
+
+    // ── Accent and state ──────────────────────────────────────────────────────
+    out property <color> accent: #2f6feb;
+    out property <color> accent-strong: #245bd0;
+    out property <color> accent-soft: #dfe9fc;
+    out property <color> selected-text: #10336b;
+    out property <color> danger: #c4362f;
+    out property <color> warning: #cf8a1f;
+
+    // ── Geometry ──────────────────────────────────────────────────────────────
+    out property <length> radius-sm: 6px;
+    out property <length> radius-md: 9px;
+    out property <length> row-height: 26px;
+    out property <length> tab-height: 32px;
+
+    // ── Type scale ────────────────────────────────────────────────────────────
+    out property <length> font-caption: 11px;
+    out property <length> font-body: 13px;
+    out property <length> font-small: 12px;
+
+    // ── Motion ────────────────────────────────────────────────────────────────
+    out property <duration> quick: 90ms;
+}

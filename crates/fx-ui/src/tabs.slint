@@ -1,0 +1,155 @@
+// Browser-like tab strip (Tranche 5, visual completion pass).
+//
+// Tabs are floating pills on the chrome band: the active one lifts onto the surface
+// colour with a hairline border and a soft shadow, so the eye finds it without a
+// second accent colour competing with the sidebar.
+
+import { Theme } from "theme.slint";
+import { Strings } from "resources/en-US.slint";
+
+export struct TabItem {
+    id: int,
+    title: string,
+    active: bool,
+}
+
+export component TabItemView inherits Rectangle {
+    in property <TabItem> tab;
+
+    callback activated();
+    callback closed();
+
+    height: Theme.tab-height;
+    width: 172px;
+    background: tab.active
+        ? Theme.surface
+        : (touch.has-hover ? Theme.hover : transparent);
+    border-width: tab.active ? 1px : 0px;
+    border-color: Theme.border;
+    border-radius: Theme.radius-sm;
+    drop-shadow-color: tab.active ? #1c21281f : transparent;
+    drop-shadow-blur: 6px;
+    drop-shadow-offset-y: 1px;
+
+    animate background { duration: Theme.quick; }
+
+    accessible-role: list-item;
+    accessible-label: tab.title + (tab.active ? ", selected" : "");
+    accessible-action-default => { root.activated(); }
+
+    touch := TouchArea {
+        clicked => { root.activated(); }
+        mouse-cursor: pointer;
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 4px;
+        padding-top: 1px;
+        spacing: 4px;
+
+        Text {
+            text: tab.title;
+            color: tab.active ? Theme.text : Theme.text-muted;
+            font-size: Theme.font-small;
+            font-weight: tab.active ? 600 : 400;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+
+        // Close affordance. Always present, because a tab that can only be closed while
+        // hovered is a trap for keyboard and touch users; it gains a wash on hover.
+        VerticalLayout {
+            width: 18px;
+            alignment: center;
+
+            Rectangle {
+                width: 18px;
+                height: 18px;
+                border-radius: 4px;
+                background: close-touch.has-hover ? Theme.hover : transparent;
+
+                close-touch := TouchArea {
+                    accessible-role: button;
+                    accessible-label: Strings.tab-close-prefix + tab.title;
+                    clicked => { root.closed(); }
+                    mouse-cursor: pointer;
+                }
+
+                Text {
+                    text: "×";
+                    color: close-touch.has-hover ? Theme.text : Theme.text-faint;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+export component TabStrip inherits Rectangle {
+    in property <[TabItem]> tabs: [];
+
+    callback tab-selected(int);
+    callback tab-close(int);
+    callback tab-new();
+
+    height: 46px;
+    background: Theme.chrome;
+    clip: true;
+    accessible-role: list;
+    accessible-label: Strings.tab-strip-label;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 7px;
+        padding-bottom: 7px;
+        spacing: 4px;
+
+        for tab[i] in tabs: TabItemView {
+            tab: tab;
+            activated => { root.tab-selected(tab.id); }
+            closed => { root.tab-close(tab.id); }
+        }
+
+        VerticalLayout {
+            width: 28px;
+            alignment: center;
+
+            Rectangle {
+                width: 28px;
+                height: 28px;
+                border-radius: Theme.radius-sm;
+                background: add-touch.has-hover ? Theme.hover : transparent;
+
+                add-touch := TouchArea {
+                    accessible-role: button;
+                    accessible-label: Strings.tab-new-label;
+                    clicked => { root.tab-new(); }
+                    mouse-cursor: pointer;
+                }
+
+                Text {
+                    text: "+";
+                    color: Theme.text-muted;
+                    font-size: 18px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Absorbs the rest of the band so the tabs stay left-aligned.
+        Rectangle { horizontal-stretch: 1; background: transparent; }
+    }
+
+    Rectangle {
+        y: parent.height - 1px;
+        width: 100%;
+        height: 1px;
+        background: Theme.border;
+    }
+}

@@ -14,6 +14,10 @@ dependencies from `Cargo.lock` before publishing binaries.
   project uses them under the **Slint Royalty-free 2.0** option; the GPLv3 option is not used.
   Attribution requirements of the Royalty-free option must be satisfied before distributing a
   binary that contains Slint. License choice is still subject to ADR 0001.
+- **Tabler Icons 3.52.0** (https://tabler.io/icons) — MIT. Path data for the sidebar and
+  window-control glyphs is copied into `crates/fx-ui/src/icons.slint` and
+  `crates/fx-ui/src/titlebar.slint`, and rendered by Slint `Path` elements. No icon font and no
+  SVG decoder are shipped.
 - `iced` 0.14.0 — MIT; spike only.
 - `jwalk` 0.9.0 — MIT. Parallel filesystem walker used by `fx-fs`. Pulls `rayon` and `crossbeam` transitively.
 - `notify` 8.2.1 — CC0-1.0. Filesystem event watcher used by `fx-fs`. Product dependency (ADR 0001).

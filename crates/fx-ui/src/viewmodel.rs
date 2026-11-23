@@ -601,14 +601,52 @@ fn format_size(size: Option<u64>) -> String {
     }
 }
 
+/// A compact date for the Modified column: `2023-11-14 22:13`.
+///
+/// The conversion is in UTC: `std` exposes no local offset, and this crate may not call
+/// Win32. A timezone-aware date belongs in the shell probe that also reads the file time;
+/// this is the single place that would change.
 fn format_modified(modified: Option<std::time::SystemTime>) -> String {
-    match modified {
-        None => String::new(),
-        Some(t) => match t.duration_since(std::time::UNIX_EPOCH) {
-            Ok(d) => format!("{}", d.as_secs()),
-            Err(_) => String::new(),
-        },
-    }
+    let Some(modified) = modified else {
+        return String::new();
+    };
+    let Ok(since_epoch) = modified.duration_since(std::time::UNIX_EPOCH) else {
+        return String::new();
+    };
+    let secs = since_epoch.as_secs() as i64;
+    let (year, month, day) = civil_from_days(secs.div_euclid(86_400));
+    let time = secs.rem_euclid(86_400);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}",
+        time / 3_600,
+        (time % 3_600) / 60
+    )
+}
+
+/// Days since 1970-01-01 to a Gregorian `(year, month, day)`.
+///
+/// Howard Hinnant's `civil_from_days`: exact for every date the file system can report,
+/// and it needs no calendar crate on the UI layer.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = z - era * 146_097; // [0, 146096]
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    (
+        if month <= 2 { year + 1 } else { year },
+        month as u32,
+        day as u32,
+    )
 }
 
 #[cfg(test)]
@@ -761,6 +799,18 @@ mod tests {
                 .filter(|row| row.id != request.entry_id)
                 .all(|row| row.thumbnail.is_none()),
             "no other row may inherit the image"
+        );
+    }
+
+    /// The Modified column carries a date, not a raw epoch count.
+    #[test]
+    fn modified_is_shown_as_a_date() {
+        use std::time::{Duration, UNIX_EPOCH};
+        assert_eq!(format_modified(None), "");
+        assert_eq!(format_modified(Some(UNIX_EPOCH)), "1970-01-01 00:00");
+        assert_eq!(
+            format_modified(Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000))),
+            "2023-11-14 22:13"
         );
     }
 

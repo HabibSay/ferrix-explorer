@@ -1,0 +1,42 @@
+// Icons for the sidebar entry kinds, drawn from Tabler Icons path data.
+//
+// Artwork: Tabler Icons 3.52.0 (https://tabler.io/icons), MIT licence — see
+// THIRD_PARTY_NOTICES.md. Only the path data is copied: the icons are rendered as Slint
+// `Path` elements, so there is no SVG decoding, no `svg` crate feature and no icon font
+// that could turn into tofu on Windows 10 22H2. The grid is Tabler's own 24 x 24.
+
+import { Theme } from "theme.slint";
+
+// Kinds: 0 home, 1 folder, 2 drive, 3 network, 4 clock.
+export component KindIcon inherits Rectangle {
+    in property <int> kind: 1;
+    in property <color> tint: Theme.text-muted;
+
+    width: 16px;
+    height: 16px;
+    background: transparent;
+    accessible-role: none;
+
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        stroke: root.tint;
+        stroke-width: 2px;
+        commands: root.kind == 0
+            // home
+            ? "M5 12l-2 0l9 -9l9 9l-2 0 M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2 -2v-7 M9 21v-6a2 2 0 0 1 2 -2h2a2 2 0 0 1 2 2v6"
+            : root.kind == 1
+                // folder
+                ? "M5 4h4l3 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2"
+                : root.kind == 2
+                    // device-desktop
+                    ? "M3 5a1 1 0 0 1 1 -1h16a1 1 0 0 1 1 1v10a1 1 0 0 1 -1 1h-16a1 1 0 0 1 -1 -1v-10 M7 20h10 M9 16v4 M15 16v4"
+                    : root.kind == 3
+                        // world
+                        ? "M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0 M3.6 9h16.8 M3.6 15h16.8 M11.5 3a17 17 0 0 0 0 18 M12.5 3a17 17 0 0 1 0 18"
+                        // clock
+                        : "M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0 M12 7v5l3 3";
+    }
+}
